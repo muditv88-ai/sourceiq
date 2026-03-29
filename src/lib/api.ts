@@ -1,9 +1,11 @@
-const BASE_URL = "https://nonecliptical-catabolically-stephenie.ngrok-free.dev";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "https://nonecliptical-catabolically-stephenie.ngrok-free.dev";
 
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
     headers: {
+      // Bypasses ngrok's browser interstitial warning page
+      "ngrok-skip-browser-warning": "true",
       ...options?.headers,
     },
   });
