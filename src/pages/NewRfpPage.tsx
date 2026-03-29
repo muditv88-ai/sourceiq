@@ -13,8 +13,7 @@ export default function NewRfpPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("upload");
   const [rfpId, setRfpId] = useState<string | null>(null);
-  const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [metadata, setMetadata] = useState<Record<string, string>>({});
+  const [parseResult, setParseResult] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -25,11 +24,11 @@ export default function NewRfpPage() {
 
     try {
       const uploadResult = await api.uploadRfp(files[0]);
-      setRfpId(uploadResult.id);
+      const id = uploadResult.rfp_id;
+      setRfpId(id);
 
-      const parseResult = await api.parseRfp(uploadResult.id);
-      setRequirements(parseResult.requirements);
-      setMetadata(parseResult.metadata);
+      const parsed = await api.parseRfp(id);
+      setParseResult(parsed.canonical_model);
       setStep("parsed");
     } catch (err: any) {
       setError(err.message || "Failed to upload and parse RFP");
@@ -136,7 +135,7 @@ export default function NewRfpPage() {
             <CardContent className="p-4 flex items-center gap-3">
               <CheckCircle2 className="h-5 w-5 text-success" />
               <span className="font-medium">
-                RFP parsed successfully — {requirements.length} requirements found
+                RFP parsed successfully
               </span>
             </CardContent>
           </Card>
@@ -162,59 +161,19 @@ export default function NewRfpPage() {
             </Card>
           )}
 
-          {/* Metadata */}
-          {Object.keys(metadata).length > 0 && (
+          {/* Parse Result */}
+          {parseResult && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">RFP Metadata</CardTitle>
+                <CardTitle className="text-base">Parsed RFP Structure</CardTitle>
               </CardHeader>
               <CardContent>
-                <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
-                  {Object.entries(metadata).map(([key, value]) => (
-                    <div key={key}>
-                      <dt className="text-xs text-muted-foreground uppercase tracking-wider">
-                        {key.replace(/_/g, " ")}
-                      </dt>
-                      <dd className="text-sm font-medium mt-0.5">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
+                <pre className="text-xs bg-muted rounded-lg p-4 overflow-auto max-h-64">
+                  {JSON.stringify(parseResult, null, 2)}
+                </pre>
               </CardContent>
             </Card>
           )}
-
-          {/* Requirements Table */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Requirements Preview</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-lg border overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/50">
-                      <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Description</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Weight</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {requirements.map((req) => (
-                      <tr key={req.id} className="border-t">
-                        <td className="p-3">
-                          <span className="px-2 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium">
-                            {req.category}
-                          </span>
-                        </td>
-                        <td className="p-3">{req.description}</td>
-                        <td className="p-3 text-right font-mono">{req.weight}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
 
           {/* Supplier Upload */}
           <Card>
