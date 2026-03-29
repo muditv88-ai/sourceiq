@@ -24,18 +24,18 @@ export const api = {
   uploadRfp: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    return request<{ id: string; filename: string; status: string }>("/rfp/upload", {
+    return request<{ rfp_id: string; filename: string; status: string }>("/rfp/upload", {
       method: "POST",
       body: formData,
     });
   },
 
-  parseRfp: (id: string) =>
+  parseRfp: (rfp_id: string) =>
     request<{
-      id: string;
-      requirements: Array<{ id: string; category: string; description: string; weight: number }>;
-      metadata: Record<string, string>;
-    }>(`/rfp/${id}/parse`, { method: "POST" }),
+      rfp_id: string;
+      status: string;
+      canonical_model: Record<string, any>;
+    }>(`/rfp/${rfp_id}/parse`, { method: "POST" }),
 
   runAnalysis: (rfpId: string, supplierFiles?: File[]) => {
     const formData = new FormData();
