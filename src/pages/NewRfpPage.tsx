@@ -56,6 +56,21 @@ export default function NewRfpPage() {
                   : i === 0
                   ? "bg-primary text-primary-foreground"
                   : i === 1 && step === "parsed"
+                {/* RFP ID Banner — add after the CheckCircle2 success card */}
+<Card className="border-primary/30 bg-primary/5">
+  <CardContent className="p-4 flex items-center justify-between gap-3">
+    <div>
+      <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">RFP ID</p>
+      <p className="text-sm font-mono font-semibold mt-0.5">{rfpId}</p>
+    </div>
+    <button
+      onClick={() => navigator.clipboard.writeText(rfpId ?? "")}
+      className="text-xs px-3 py-1.5 rounded-md bg-primary/10 hover:bg-primary/20 text-primary font-medium transition-colors"
+    >
+      Copy ID
+    </button>
+  </CardContent>
+</Card>
                   ? "bg-success text-success-foreground"
                   : i === 1 && step === "parsing"
                   ? "bg-primary text-primary-foreground"
