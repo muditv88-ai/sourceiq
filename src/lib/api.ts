@@ -8,7 +8,6 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
     headers: {
-      // Bypasses ngrok's browser interstitial warning page
       "ngrok-skip-browser-warning": "true",
       ...options?.headers,
     },
@@ -37,26 +36,19 @@ export const api = {
       canonical_model: Record<string, any>;
     }>(`/rfp/${rfp_id}/parse`, { method: "POST" }),
 
-  runAnalysis: (rfpId: string, supplierFiles?: File[]) => {
-    const formData = new FormData();
-    formData.append("rfp_id", rfpId);
-    if (supplierFiles) {
-      supplierFiles.forEach((f) => formData.append("files", f));
-    }
-    return request<{
+  runAnalysis: (rfp_id: string) =>
+    request<{
       rfp_id: string;
-      suppliers: Array<{
-        name: string;
-        overall_score: number;
-        category_scores: Record<string, number>;
-        strengths: string[];
-        weaknesses: string[];
-        rank: number;
+      ranked_suppliers: Array<{
+        supplier_id: string;
+        total_score: number;
+        compliance: boolean;
       }>;
-      insights: string[];
-      recommendation: string;
-    }>("/analysis/run", { method: "POST", body: formData });
-  },
+    }>("/analysis/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rfp_id }),
+    }),
 
   runScenario: (params: {
     rfp_id: string;

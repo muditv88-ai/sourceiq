@@ -4,10 +4,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
-import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Copy } from "lucide-react";
-import type { Requirement } from "@/lib/types";
+import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Copy, Play } from "lucide-react";
 
-type Step = "upload" | "parsing" | "parsed" | "error";
+type Step = "upload" | "parsing" | "parsed" | "analyzing" | "error";
 
 export default function NewRfpPage() {
   const navigate = useNavigate();
@@ -32,6 +31,19 @@ export default function NewRfpPage() {
       setStep("parsed");
     } catch (err: any) {
       setError(err.message || "Failed to upload and parse RFP");
+      setStep("error");
+    }
+  };
+
+  const handleRunAnalysis = async () => {
+    if (!rfpId) return;
+    setStep("analyzing");
+    setError(null);
+    try {
+      await api.runAnalysis(rfpId);
+      navigate("/analysis");
+    } catch (err: any) {
+      setError(err.message || "Failed to run analysis");
       setStep("error");
     }
   };
@@ -62,9 +74,11 @@ export default function NewRfpPage() {
                   ? "bg-success text-success-foreground"
                   : i === 0
                   ? "bg-primary text-primary-foreground"
-                  : i === 1 && step === "parsed"
+                  : i === 1 && (step === "parsed" || step === "analyzing")
                   ? "bg-success text-success-foreground"
                   : i === 1 && step === "parsing"
+                  ? "bg-primary text-primary-foreground"
+                  : i === 2 && step === "analyzing"
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted text-muted-foreground"
               }`}
@@ -93,14 +107,16 @@ export default function NewRfpPage() {
       )}
 
       {/* Parsing */}
-      {step === "parsing" && (
+      {(step === "parsing" || step === "analyzing") && (
         <Card>
           <CardContent className="p-12 flex flex-col items-center gap-4">
             <Loader2 className="h-10 w-10 text-primary animate-spin" />
             <div className="text-center">
-              <p className="font-semibold">Processing your RFP...</p>
+              <p className="font-semibold">
+                {step === "parsing" ? "Processing your RFP..." : "Running analysis..."}
+              </p>
               <p className="text-sm text-muted-foreground mt-1">
-                Uploading and parsing requirements
+                {step === "parsing" ? "Uploading and parsing requirements" : "Scoring and ranking suppliers"}
               </p>
             </div>
           </CardContent>
@@ -113,12 +129,12 @@ export default function NewRfpPage() {
           <CardContent className="p-6 flex items-start gap-4">
             <AlertCircle className="h-6 w-6 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="font-semibold text-destructive">Upload Failed</p>
+              <p className="font-semibold text-destructive">Something went wrong</p>
               <p className="text-sm text-muted-foreground mt-1">{error}</p>
               <Button
                 variant="outline"
                 className="mt-4"
-                onClick={() => setStep("upload")}
+                onClick={() => setStep(rfpId ? "parsed" : "upload")}
               >
                 Try Again
               </Button>
@@ -134,9 +150,7 @@ export default function NewRfpPage() {
           <Card className="border-success/30">
             <CardContent className="p-4 flex items-center gap-3">
               <CheckCircle2 className="h-5 w-5 text-success" />
-              <span className="font-medium">
-                RFP parsed successfully
-              </span>
+              <span className="font-medium">RFP parsed successfully</span>
             </CardContent>
           </Card>
 
@@ -175,29 +189,19 @@ export default function NewRfpPage() {
             </Card>
           )}
 
-          {/* Supplier Upload */}
+          {/* Run Analysis */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Upload Supplier Responses</CardTitle>
+              <CardTitle className="text-base">Run Supplier Analysis</CardTitle>
               <CardDescription>
-                Upload supplier response files to start the analysis
+                Analyse and rank suppliers based on the parsed RFP requirements
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <FileUploadZone
-                onFileSelect={async (files) => {
-                  if (!rfpId || files.length === 0) return;
-                  try {
-                    await api.runAnalysis(rfpId, files);
-                    navigate("/analysis");
-                  } catch (err: any) {
-                    setError(err.message);
-                  }
-                }}
-                multiple
-                label="Upload Supplier Responses"
-                description="Upload one or more supplier response Excel files"
-              />
+            <CardContent>
+              <Button onClick={handleRunAnalysis} className="w-full gap-2">
+                <Play className="h-4 w-4" />
+                Run Analysis
+              </Button>
             </CardContent>
           </Card>
         </div>
