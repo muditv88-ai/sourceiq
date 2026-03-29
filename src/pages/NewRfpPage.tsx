@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
-import { Loader2, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
+import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Copy } from "lucide-react";
 import type { Requirement } from "@/lib/types";
 
 type Step = "upload" | "parsing" | "parsed" | "error";
@@ -16,6 +16,7 @@ export default function NewRfpPage() {
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [metadata, setMetadata] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const handleUpload = async (files: File[]) => {
     if (files.length === 0) return;
@@ -34,6 +35,13 @@ export default function NewRfpPage() {
       setError(err.message || "Failed to upload and parse RFP");
       setStep("error");
     }
+  };
+
+  const handleCopyId = () => {
+    if (!rfpId) return;
+    navigator.clipboard.writeText(rfpId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -56,21 +64,6 @@ export default function NewRfpPage() {
                   : i === 0
                   ? "bg-primary text-primary-foreground"
                   : i === 1 && step === "parsed"
-                {/* RFP ID Banner — add after the CheckCircle2 success card */}
-                <Card className="border-primary/30 bg-primary/5">
-                  <CardContent className="p-4 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">RFP ID</p>
-                      <p className="text-sm font-mono font-semibold mt-0.5">{rfpId}</p>
-                    </div>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(rfpId ?? "")}
-                      className="text-xs px-3 py-1.5 rounded-md bg-primary/10 hover:bg-primary/20 text-primary font-medium transition-colors"
-                 >
-                  Copy ID
-                </button>
-              </CardContent>
-            </Card>
                   ? "bg-success text-success-foreground"
                   : i === 1 && step === "parsing"
                   ? "bg-primary text-primary-foreground"
@@ -138,6 +131,7 @@ export default function NewRfpPage() {
       {/* Parsed Results */}
       {step === "parsed" && (
         <div className="space-y-4">
+          {/* Success banner */}
           <Card className="border-success/30">
             <CardContent className="p-4 flex items-center gap-3">
               <CheckCircle2 className="h-5 w-5 text-success" />
@@ -146,6 +140,27 @@ export default function NewRfpPage() {
               </span>
             </CardContent>
           </Card>
+
+          {/* RFP ID Banner */}
+          {rfpId && (
+            <Card className="border-primary/30 bg-primary/5">
+              <CardContent className="p-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                    RFP ID
+                  </p>
+                  <p className="text-sm font-mono font-semibold mt-0.5">{rfpId}</p>
+                </div>
+                <button
+                  onClick={handleCopyId}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-primary/10 hover:bg-primary/20 text-primary font-medium transition-colors"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {copied ? "Copied!" : "Copy ID"}
+                </button>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Metadata */}
           {Object.keys(metadata).length > 0 && (
