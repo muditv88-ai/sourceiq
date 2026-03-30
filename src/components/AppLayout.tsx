@@ -8,11 +8,13 @@ import {
   Mail,
   FileSpreadsheet,
   DollarSign,
+  FolderOpen,
 } from "lucide-react";
 import ChatWidget from "@/components/ChatWidget";
 
 const navItems = [
   { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
+  { to: "/projects",       icon: FolderOpen,        label: "Projects" },
   { to: "/rfp/new",        icon: FilePlus,          label: "New RFP" },
   { to: "/analysis",       icon: BarChart3,         label: "Analysis" },
   { to: "/pricing",        icon: DollarSign,        label: "Pricing" },
