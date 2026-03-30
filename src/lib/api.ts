@@ -46,6 +46,17 @@ export const api = {
       body: JSON.stringify({ rfp_id }),
     }),
 
+  chat: (
+    messages: Array<{ role: string; content: string }>,
+    rfp_id?: string,
+    analysis_context?: unknown
+  ) =>
+    request<{ message: string; action: Record<string, unknown> | null }>("/chat/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, rfp_id, analysis_context }),
+    }),
+
   runScenario: (params: {
     rfp_id: string;
     weights: Record<string, number>;

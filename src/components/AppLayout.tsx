@@ -8,6 +8,7 @@ import {
   Mail,
   FileSpreadsheet,
 } from "lucide-react";
+import ChatWidget from "@/components/ChatWidget";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
@@ -65,6 +66,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <main className="flex-1 overflow-y-auto">
         <div className="p-8">{children}</div>
       </main>
+
+      {/* Global floating chat agent */}
+      <ChatWidget />
     </div>
   );
 }
