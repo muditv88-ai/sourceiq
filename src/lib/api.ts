@@ -1,3 +1,5 @@
+import type { AnalysisResult, ParseResult } from "./types";
+
 const BASE_URL = "/api";
 
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -26,21 +28,19 @@ export const api = {
   },
 
   parseRfp: (rfp_id: string) =>
-    request<{
-      rfp_id: string;
-      status: string;
-      canonical_model: Record<string, any>;
-    }>(`/rfp/${rfp_id}/parse`, { method: "POST" }),
+    request<ParseResult>(`/rfp/${rfp_id}/parse`, { method: "POST" }),
+
+  uploadSupplier: (rfp_id: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return request<{ rfp_id: string; supplier_id: string; status: string }>(
+      `/rfp/${rfp_id}/supplier`,
+      { method: "POST", body: formData }
+    );
+  },
 
   runAnalysis: (rfp_id: string) =>
-    request<{
-      rfp_id: string;
-      ranked_suppliers: Array<{
-        supplier_id: string;
-        total_score: number;
-        compliance: boolean;
-      }>;
-    }>("/analysis/run", {
+    request<AnalysisResult>("/analysis/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfp_id }),
@@ -70,13 +70,12 @@ export const api = {
     supplier_name: string;
     clarification_points: string[];
   }) =>
-    request<{
-      subject: string;
-      body: string;
-      supplier_name: string;
-    }>("/communications/clarification-email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+    request<{ subject: string; body: string; supplier_name: string }>(
+      "/communications/clarification-email",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      }
+    ),
 };

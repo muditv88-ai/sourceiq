@@ -1,86 +1,73 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import ScoreDisplay from "@/components/ScoreDisplay";
+import { analysisStore } from "@/lib/analysisStore";
+import type { AnalysisResult, SupplierResult, CategoryScore } from "@/lib/types";
 import {
-  Trophy,
-  TrendingUp,
-  TrendingDown,
-  Lightbulb,
-  ArrowUpDown,
-  ChevronDown,
-  ChevronUp,
+  Trophy, TrendingUp, TrendingDown, ArrowUpDown,
+  ChevronDown, ChevronUp, PlusCircle, Info,
 } from "lucide-react";
-import type { Supplier } from "@/lib/types";
-
-// Demo data
-const demoSuppliers: Supplier[] = [
-  {
-    name: "Acme Solutions",
-    overall_score: 87,
-    category_scores: { Technical: 90, Pricing: 82, Experience: 88, Support: 85 },
-    strengths: ["Strong technical capabilities", "Proven track record", "24/7 support"],
-    weaknesses: ["Higher pricing tier"],
-    rank: 1,
-  },
-  {
-    name: "GlobalTech Corp",
-    overall_score: 79,
-    category_scores: { Technical: 85, Pricing: 78, Experience: 72, Support: 80 },
-    strengths: ["Competitive pricing", "Global presence"],
-    weaknesses: ["Limited local support", "Fewer references"],
-    rank: 2,
-  },
-  {
-    name: "NovaBridge Inc",
-    overall_score: 72,
-    category_scores: { Technical: 70, Pricing: 90, Experience: 60, Support: 68 },
-    strengths: ["Best pricing", "Flexible contracts"],
-    weaknesses: ["Newer to market", "Smaller team", "Limited certifications"],
-    rank: 3,
-  },
-  {
-    name: "Pinnacle Services",
-    overall_score: 65,
-    category_scores: { Technical: 60, Pricing: 75, Experience: 65, Support: 62 },
-    strengths: ["Good pricing", "Local presence"],
-    weaknesses: ["Technical gaps", "Limited scalability"],
-    rank: 4,
-  },
-];
-
-const demoInsights = [
-  "Acme Solutions leads with a 87/100 overall score, excelling in Technical (90) and Experience (88).",
-  "NovaBridge offers the best pricing but has the lowest Experience score — consider requesting case studies.",
-  "All suppliers meet minimum technical requirements. Key differentiators are support quality and pricing.",
-  "Gap analysis reveals no supplier covers IoT integration — consider adding to clarification requests.",
-];
-
-const demoRecommendation =
-  "Based on the weighted evaluation, Acme Solutions is the recommended vendor. While their pricing is 12% above average, their superior technical capabilities and support infrastructure justify the premium. Consider negotiating volume discounts with Acme while keeping GlobalTech as an alternative.";
 
 export default function AnalysisPage() {
+  const navigate = useNavigate();
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"rank" | "score">("rank");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const suppliers = demoSuppliers;
-  const categories = Object.keys(suppliers[0]?.category_scores || {});
+
+  useEffect(() => {
+    const stored = analysisStore.getResult();
+    if (stored) setResult(stored);
+  }, []);
+
+  if (!result) {
+    return (
+      <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
+        <p className="text-muted-foreground text-lg">No analysis results yet.</p>
+        <Button onClick={() => navigate("/new")} className="gap-2">
+          <PlusCircle className="h-4 w-4" /> Start New Evaluation
+        </Button>
+      </div>
+    );
+  }
+
+  const suppliers = [...result.suppliers].sort((a, b) =>
+    sortBy === "rank" ? a.rank - b.rank : b.overall_score - a.overall_score
+  );
+
+  const allCategories = Array.from(
+    new Set(suppliers.flatMap(s => s.category_scores.map(c => c.category)))
+  );
+
+  const top = suppliers[0];
+
+  // Score color helper
+  const scoreColor = (score: number) =>
+    score >= 7.5 ? "text-success font-semibold"
+    : score >= 5 ? "text-warning font-semibold"
+    : "text-destructive font-semibold";
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Supplier Analysis</h1>
-          <p className="text-muted-foreground mt-1">
-            Comparative evaluation of {suppliers.length} suppliers
-          </p>
+          <p className="text-muted-foreground mt-1">{result.analysis_summary}</p>
         </div>
-        <Button variant="outline" className="gap-2" onClick={() => setSortBy(sortBy === "rank" ? "score" : "rank")}>
-          <ArrowUpDown className="h-4 w-4" />
-          Sort by {sortBy === "rank" ? "Score" : "Rank"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => setSortBy(sortBy === "rank" ? "score" : "rank")}>
+            <ArrowUpDown className="h-4 w-4" />
+            Sort by {sortBy === "rank" ? "Score" : "Rank"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => navigate("/new")}>
+            <PlusCircle className="h-4 w-4 mr-2" /> New
+          </Button>
+        </div>
       </div>
 
-      {/* Top Supplier Card */}
+      {/* Top Supplier Banner */}
       <Card className="border-success/30 bg-success/5">
         <CardContent className="p-6 flex items-center gap-6">
           <div className="h-14 w-14 rounded-2xl bg-success/10 flex items-center justify-center">
@@ -88,18 +75,21 @@ export default function AnalysisPage() {
           </div>
           <div className="flex-1">
             <p className="text-sm text-muted-foreground font-medium">Recommended Supplier</p>
-            <p className="text-xl font-bold mt-0.5">{suppliers[0].name}</p>
-            <p className="text-sm text-muted-foreground mt-1">{demoRecommendation.slice(0, 120)}...</p>
+            <p className="text-xl font-bold mt-0.5">{top.supplier_name}</p>
+            <p className="text-sm text-muted-foreground mt-1">{top.recommendation}</p>
           </div>
-          <ScoreDisplay score={suppliers[0].overall_score} size="lg" />
+          <div className="text-right shrink-0">
+            <p className="text-3xl font-bold text-success">{top.overall_score.toFixed(1)}</p>
+            <p className="text-xs text-muted-foreground">out of 10</p>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Comparison Table */}
+      {/* Comparison Matrix */}
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Comparison Matrix</CardTitle>
-          <CardDescription>Scores across all evaluation categories</CardDescription>
+          <CardDescription>Weighted scores by category (0–10). Click a row to drill down.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="rounded-lg border overflow-x-auto">
@@ -109,119 +99,157 @@ export default function AnalysisPage() {
                   <th className="text-left p-3 font-medium text-muted-foreground">Rank</th>
                   <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
                   <th className="text-center p-3 font-medium text-muted-foreground">Overall</th>
-                  {categories.map((cat) => (
-                    <th key={cat} className="text-center p-3 font-medium text-muted-foreground">
-                      {cat}
-                    </th>
+                  {allCategories.map(cat => (
+                    <th key={cat} className="text-center p-3 font-medium text-muted-foreground whitespace-nowrap">{cat}</th>
                   ))}
                   <th className="p-3" />
                 </tr>
               </thead>
               <tbody>
-                {suppliers.map((s) => (
-                  <>
-                    <tr
-                      key={s.name}
-                      className="border-t hover:bg-muted/30 cursor-pointer transition-colors"
-                      onClick={() => setExpanded(expanded === s.name ? null : s.name)}
-                    >
-                      <td className="p-3">
-                        <span className="h-7 w-7 rounded-full bg-muted flex items-center justify-center text-xs font-bold">
-                          #{s.rank}
-                        </span>
-                      </td>
-                      <td className="p-3 font-medium">{s.name}</td>
-                      <td className="p-3 text-center">
-                        <ScoreDisplay score={s.overall_score} size="sm" showLabel={false} />
-                      </td>
-                      {categories.map((cat) => {
-                        const score = s.category_scores[cat];
-                        const cls =
-                          score >= 80
-                            ? "text-success font-semibold"
-                            : score >= 65
-                            ? "text-warning font-semibold"
-                            : "text-destructive font-semibold";
-                        return (
-                          <td key={cat} className={`p-3 text-center ${cls}`}>
-                            {score}
+                {suppliers.map(s => {
+                  const catMap = Object.fromEntries(s.category_scores.map(c => [c.category, c.weighted_score]));
+                  const isExpanded = expandedSupplier === s.supplier_id;
+                  return (
+                    <>
+                      <tr
+                        key={s.supplier_id}
+                        className="border-t hover:bg-muted/30 cursor-pointer transition-colors"
+                        onClick={() => setExpandedSupplier(isExpanded ? null : s.supplier_id)}
+                      >
+                        <td className="p-3">
+                          <span className="h-7 w-7 rounded-full bg-muted flex items-center justify-center text-xs font-bold">#{s.rank}</span>
+                        </td>
+                        <td className="p-3 font-medium">{s.supplier_name}</td>
+                        <td className="p-3 text-center">
+                          <span className={`text-base ${scoreColor(s.overall_score)}`}>{s.overall_score.toFixed(1)}</span>
+                        </td>
+                        {allCategories.map(cat => (
+                          <td key={cat} className={`p-3 text-center ${scoreColor(catMap[cat] ?? 0)}`}>
+                            {catMap[cat] != null ? catMap[cat].toFixed(1) : "—"}
                           </td>
-                        );
-                      })}
-                      <td className="p-3">
-                        {expanded === s.name ? (
-                          <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                        )}
-                      </td>
-                    </tr>
-                    {expanded === s.name && (
-                      <tr key={`${s.name}-detail`} className="bg-muted/20">
-                        <td colSpan={categories.length + 4} className="p-4">
-                          <div className="grid grid-cols-2 gap-6">
-                            <div>
-                              <p className="text-sm font-medium flex items-center gap-2 mb-2">
-                                <TrendingUp className="h-4 w-4 text-success" /> Strengths
-                              </p>
-                              <ul className="space-y-1">
-                                {s.strengths.map((str) => (
-                                  <li key={str} className="text-sm text-muted-foreground flex items-start gap-2">
-                                    <span className="text-success mt-1">•</span> {str}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                            <div>
-                              <p className="text-sm font-medium flex items-center gap-2 mb-2">
-                                <TrendingDown className="h-4 w-4 text-destructive" /> Weaknesses
-                              </p>
-                              <ul className="space-y-1">
-                                {s.weaknesses.map((w) => (
-                                  <li key={w} className="text-sm text-muted-foreground flex items-start gap-2">
-                                    <span className="text-destructive mt-1">•</span> {w}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          </div>
+                        ))}
+                        <td className="p-3">
+                          {isExpanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                         </td>
                       </tr>
-                    )}
-                  </>
-                ))}
+
+                      {/* Supplier drill-down */}
+                      {isExpanded && (
+                        <tr key={`${s.supplier_id}-detail`}>
+                          <td colSpan={allCategories.length + 4} className="bg-muted/10 p-4">
+                            <div className="space-y-4">
+
+                              {/* Strengths / Weaknesses */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-2">
+                                    <TrendingUp className="h-4 w-4 text-success" /> Strengths
+                                  </p>
+                                  <ul className="space-y-1">
+                                    {s.strengths.map(str => (
+                                      <li key={str} className="text-sm text-muted-foreground flex items-start gap-2">
+                                        <span className="text-success mt-0.5">•</span> {str}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                                <div>
+                                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-2">
+                                    <TrendingDown className="h-4 w-4 text-destructive" /> Weaknesses
+                                  </p>
+                                  <ul className="space-y-1">
+                                    {s.weaknesses.map(w => (
+                                      <li key={w} className="text-sm text-muted-foreground flex items-start gap-2">
+                                        <span className="text-destructive mt-0.5">•</span> {w}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </div>
+
+                              {/* Per-category question breakdown */}
+                              <div>
+                                <p className="text-sm font-semibold mb-2">Question-level Scores</p>
+                                <div className="space-y-2">
+                                  {s.category_scores.map((cat: CategoryScore) => {
+                                    const catKey = `${s.supplier_id}-${cat.category}`;
+                                    const catExpanded = expandedCategory === catKey;
+                                    return (
+                                      <div key={cat.category} className="rounded-lg border bg-background">
+                                        {/* Category header */}
+                                        <button
+                                          className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/30 transition-colors"
+                                          onClick={e => { e.stopPropagation(); setExpandedCategory(catExpanded ? null : catKey); }}
+                                        >
+                                          <span className="text-sm font-medium">{cat.category}</span>
+                                          <div className="flex items-center gap-3">
+                                            <span className={`text-sm font-bold ${scoreColor(cat.weighted_score)}`}>
+                                              {cat.weighted_score.toFixed(1)} / 10
+                                            </span>
+                                            {catExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                          </div>
+                                        </button>
+
+                                        {/* Question rows */}
+                                        {catExpanded && (
+                                          <div className="border-t divide-y">
+                                            {cat.questions.map(q => (
+                                              <div key={q.question_id} className="px-4 py-3 space-y-1">
+                                                <div className="flex items-start justify-between gap-4">
+                                                  <div className="flex-1">
+                                                    <div className="flex items-center gap-2 mb-0.5">
+                                                      <span className="text-xs font-bold text-primary">{q.question_id}</span>
+                                                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                                        q.question_type === "quantitative"
+                                                          ? "bg-blue-100 text-blue-700"
+                                                          : "bg-purple-100 text-purple-700"
+                                                      }`}>
+                                                        {q.question_type === "quantitative" ? "Quantitative" : "Qualitative"}
+                                                      </span>
+                                                      <span className="text-xs text-muted-foreground">Weight: {q.weight}%</span>
+                                                    </div>
+                                                    <p className="text-sm font-medium">{q.question_text}</p>
+                                                  </div>
+                                                  <span className={`text-base font-bold shrink-0 ${scoreColor(q.score)}`}>
+                                                    {q.score.toFixed(1)}/10
+                                                  </span>
+                                                </div>
+                                                {/* Supplier answer */}
+                                                <div className="rounded bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                                                  <span className="font-medium text-foreground">Answer: </span>{q.supplier_answer}
+                                                </div>
+                                                {/* AI rationale */}
+                                                <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                                                  <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-primary" />
+                                                  <span>{q.rationale}</span>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
 
-      {/* AI Insights */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Lightbulb className="h-5 w-5 text-warning" /> AI Insights
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ul className="space-y-3">
-            {demoInsights.map((insight, i) => (
-              <li key={i} className="flex items-start gap-3 text-sm">
-                <span className="h-5 w-5 rounded-full bg-warning/10 text-warning flex items-center justify-center shrink-0 text-xs font-bold mt-0.5">
-                  {i + 1}
-                </span>
-                <span className="text-muted-foreground">{insight}</span>
-              </li>
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
-
-      {/* Recommendation */}
+      {/* Final Recommendation */}
       <Card className="border-primary/30">
         <CardContent className="p-6">
           <p className="text-sm font-semibold text-primary mb-2">📋 Final Recommendation</p>
-          <p className="text-sm text-muted-foreground leading-relaxed">{demoRecommendation}</p>
+          <p className="text-sm text-muted-foreground leading-relaxed">{result.top_recommendation}</p>
         </CardContent>
       </Card>
     </div>
