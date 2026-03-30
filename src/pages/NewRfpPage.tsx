@@ -5,20 +5,93 @@ import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
 import { analysisStore } from "@/lib/analysisStore";
-import { Loader2, CheckCircle2, AlertCircle, ArrowRight, Copy, Play, Upload, X, Clock } from "lucide-react";
+import {
+  Loader2, CheckCircle2, AlertCircle, ArrowRight,
+  Copy, Play, Upload, X, Clock, FileSearch, Brain, BarChart3,
+} from "lucide-react";
 import type { RFPQuestion } from "@/lib/types";
 
 type Step = "upload" | "parsing" | "parsed" | "analyzing" | "error";
 
-const ANALYSIS_MESSAGES = [
-  "Parsing supplier documents across all sheets...",
-  "Extracting answers to each question...",
-  "Scoring responses with AI...",
-  "Comparing suppliers on quantitative criteria...",
-  "Generating category breakdowns...",
-  "Computing final rankings...",
-  "Almost there — wrapping up...",
+const PARSE_MESSAGES = [
+  { icon: FileSearch, text: "Reading document structure...", sub: "Extracting text from all sheets and sections" },
+  { icon: Brain,      text: "Identifying evaluation criteria...", sub: "AI is scanning for questions and requirements" },
+  { icon: Brain,      text: "Classifying question types...", sub: "Tagging quantitative vs qualitative criteria" },
+  { icon: BarChart3,  text: "Assigning category weights...", sub: "Distributing importance scores across categories" },
+  { icon: Brain,      text: "Still working on a large document...", sub: "Processing remaining sections in parallel" },
+  { icon: Brain,      text: "Finalising question list...", sub: "Almost done — merging results across all chunks" },
 ];
+
+const ANALYSIS_MESSAGES = [
+  { text: "Parsing supplier documents...",         sub: "Extracting answers from all sheets" },
+  { text: "Mapping answers to questions...",        sub: "Matching supplier responses to RFP criteria" },
+  { text: "Scoring quantitative criteria...",       sub: "Comparing numbers, dates and percentages" },
+  { text: "Scoring qualitative responses...",       sub: "Evaluating written answers with AI" },
+  { text: "Computing category breakdowns...",       sub: "Aggregating weighted scores per category" },
+  { text: "Ranking suppliers...",                   sub: "Sorting by overall weighted score" },
+  { text: "Generating insights & recommendations...", sub: "Almost there!" },
+];
+
+function ProgressCard({
+  messages,
+  msgIndex,
+  label,
+  supplierCount,
+  categoryCount,
+}: {
+  messages: typeof PARSE_MESSAGES | typeof ANALYSIS_MESSAGES;
+  msgIndex: number;
+  label: string;
+  supplierCount?: number;
+  categoryCount?: number;
+}) {
+  const msg = messages[Math.min(msgIndex, messages.length - 1)] as any;
+  const Icon = msg.icon ?? Brain;
+  const progress = Math.min(95, ((msgIndex + 1) / messages.length) * 100);
+
+  return (
+    <Card>
+      <CardContent className="p-10 flex flex-col items-center gap-6">
+        <div className="relative">
+          <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+            <Icon className="h-8 w-8 text-primary" />
+          </div>
+          <Loader2 className="h-5 w-5 text-primary animate-spin absolute -bottom-1 -right-1" />
+        </div>
+
+        <div className="text-center space-y-1.5 max-w-sm">
+          <p className="font-semibold text-lg">{label}</p>
+          <p className="text-sm font-medium text-foreground">{msg.text}</p>
+          <p className="text-sm text-muted-foreground">{msg.sub}</p>
+          {supplierCount !== undefined && categoryCount !== undefined && (
+            <p className="text-xs text-muted-foreground mt-2">
+              {supplierCount} supplier{supplierCount !== 1 ? "s" : ""} · {categoryCount} categories
+            </p>
+          )}
+        </div>
+
+        {/* Progress bar */}
+        <div className="w-full max-w-xs">
+          <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
+            <span>Processing</span>
+            <span>{Math.round(progress)}%</span>
+          </div>
+          <div className="bg-muted rounded-full h-2 overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all duration-[2000ms] ease-in-out"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Clock className="h-3.5 w-3.5" />
+          <span>Please keep this tab open</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function NewRfpPage() {
   const navigate = useNavigate();
@@ -31,21 +104,45 @@ export default function NewRfpPage() {
   const [suppliersUploaded, setSuppliersUploaded] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [analysisMsg, setAnalysisMsg] = useState(ANALYSIS_MESSAGES[0]);
+  const [parseMsgIdx, setParseMsgIdx] = useState(0);
+  const [analysisMsgIdx, setAnalysisMsgIdx] = useState(0);
+
+  // Rotate through progress messages every N seconds
+  const startMessageRotation = (
+    setter: (i: number) => void,
+    total: number,
+    intervalMs = 7000
+  ) => {
+    let idx = 0;
+    const timer = setInterval(() => {
+      idx = Math.min(idx + 1, total - 1);
+      setter(idx);
+      if (idx >= total - 1) clearInterval(timer);
+    }, intervalMs);
+    return timer;
+  };
 
   const handleRfpUpload = async (files: File[]) => {
     if (!files || files.length === 0) return;
     setStep("parsing");
+    setParseMsgIdx(0);
     setError(null);
+
+    const timer = startMessageRotation(setParseMsgIdx, PARSE_MESSAGES.length, 7000);
     try {
       const uploadResult = await api.uploadRfp(files[0]);
       const id = uploadResult.rfp_id;
       setRfpId(id);
+
+      // parseRfp fires job + polls — UI stays on "parsing" the whole time
       const parsed = await api.parseRfp(id);
+      clearInterval(timer);
+
       setQuestions(Array.isArray(parsed.questions) ? parsed.questions : []);
       setCategories(Array.isArray(parsed.categories) ? parsed.categories : []);
       setStep("parsed");
     } catch (err: any) {
+      clearInterval(timer);
       setError(err.message || "Failed to upload and parse RFP");
       setStep("error");
     }
@@ -69,30 +166,23 @@ export default function NewRfpPage() {
     setSuppliersUploaded(0);
     setError(null);
     try {
-      // 1. Upload all supplier files
       for (let i = 0; i < supplierFiles.length; i++) {
         await api.uploadSupplier(rfpId, supplierFiles[i]);
         setSuppliersUploaded(i + 1);
       }
 
-      // 2. Start analysis job + poll (no 504 risk — each poll is a tiny GET)
       setStep("analyzing");
+      setAnalysisMsgIdx(0);
       setUploadingSuppliers(false);
 
-      // Rotate progress messages while polling
-      let msgIdx = 0;
-      const msgTimer = setInterval(() => {
-        msgIdx = (msgIdx + 1) % ANALYSIS_MESSAGES.length;
-        setAnalysisMsg(ANALYSIS_MESSAGES[msgIdx]);
-      }, 8000);
-
+      const timer = startMessageRotation(setAnalysisMsgIdx, ANALYSIS_MESSAGES.length, 9000);
       try {
         const result = await api.runAnalysis(rfpId);
-        clearInterval(msgTimer);
+        clearInterval(timer);
         analysisStore.setResult(rfpId, result);
         navigate("/analysis");
-      } catch (err: any) {
-        clearInterval(msgTimer);
+      } catch (err) {
+        clearInterval(timer);
         throw err;
       }
     } catch (err: any) {
@@ -121,7 +211,7 @@ export default function NewRfpPage() {
 
       {/* Step indicators */}
       <div className="flex items-center gap-3">
-        {["Upload RFP", "Parse", "Analyse"].map((s, i) => (
+        {["Upload & Parse RFP", "Add Suppliers", "Analyse"].map((s, i) => (
           <div key={s} className="flex items-center gap-2">
             <div className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors ${
               i < stepIndex ? "bg-success text-success-foreground"
@@ -134,7 +224,7 @@ export default function NewRfpPage() {
         ))}
       </div>
 
-      {/* Upload RFP */}
+      {/* Upload */}
       {step === "upload" && (
         <Card>
           <CardHeader>
@@ -152,41 +242,24 @@ export default function NewRfpPage() {
         </Card>
       )}
 
-      {/* Parsing spinner */}
+      {/* Parsing spinner with live messages */}
       {step === "parsing" && (
-        <Card>
-          <CardContent className="p-12 flex flex-col items-center gap-4">
-            <Loader2 className="h-10 w-10 text-primary animate-spin" />
-            <div className="text-center">
-              <p className="font-semibold">Parsing RFP with AI...</p>
-              <p className="text-sm text-muted-foreground mt-1">Extracting questions, categories and weights</p>
-            </div>
-          </CardContent>
-        </Card>
+        <ProgressCard
+          messages={PARSE_MESSAGES}
+          msgIndex={parseMsgIdx}
+          label="Parsing RFP with AI..."
+        />
       )}
 
-      {/* Analyzing — async polling UI */}
+      {/* Analysis spinner with live messages */}
       {step === "analyzing" && (
-        <Card>
-          <CardContent className="p-12 flex flex-col items-center gap-6">
-            <div className="relative">
-              <Loader2 className="h-12 w-12 text-primary animate-spin" />
-              <Clock className="h-5 w-5 text-muted-foreground absolute -bottom-1 -right-1" />
-            </div>
-            <div className="text-center space-y-2">
-              <p className="font-semibold text-lg">Running agentic analysis...</p>
-              <p className="text-sm text-muted-foreground">{analysisMsg}</p>
-              <p className="text-xs text-muted-foreground mt-3 max-w-sm">
-                Scoring {supplierFiles.length} supplier{supplierFiles.length !== 1 ? "s" : ""} across {categories.length} categories.
-                Large files with many questions may take several minutes — please keep this tab open.
-              </p>
-            </div>
-            {/* Animated progress bar */}
-            <div className="w-full max-w-xs bg-muted rounded-full h-1.5 overflow-hidden">
-              <div className="h-full bg-primary rounded-full animate-[progress_8s_ease-in-out_infinite]" style={{width: "60%"}} />
-            </div>
-          </CardContent>
-        </Card>
+        <ProgressCard
+          messages={ANALYSIS_MESSAGES}
+          msgIndex={analysisMsgIdx}
+          label="Running agentic analysis..."
+          supplierCount={supplierFiles.length}
+          categoryCount={categories.length}
+        />
       )}
 
       {/* Error */}
@@ -205,7 +278,7 @@ export default function NewRfpPage() {
         </Card>
       )}
 
-      {/* Parsed state */}
+      {/* Parsed */}
       {step === "parsed" && (
         <div className="space-y-4">
           <Card className="border-success/30">
@@ -296,7 +369,7 @@ export default function NewRfpPage() {
 
               <Button
                 onClick={handleUploadAndAnalyse}
-                disabled={supplierFiles.length === 0 || uploadingSuppliers || step === "analyzing"}
+                disabled={supplierFiles.length === 0 || uploadingSuppliers}
                 className="w-full gap-2"
               >
                 {uploadingSuppliers ? (
