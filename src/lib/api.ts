@@ -17,30 +17,27 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-/** Poll /analysis/status/{job_id} every 5s until completed or failed. */
-async function pollAnalysis(jobId: string): Promise<AnalysisResult> {
-  const POLL_INTERVAL_MS = 5000;
-  const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes max
+/** Generic job poller — works for both /rfp/parse-status and /analysis/status */
+async function pollJob<T>(
+  statusEndpoint: string,
+  maxWaitMs = 10 * 60 * 1000, // 10 min default
+  intervalMs = 4000
+): Promise<T> {
   const start = Date.now();
-
-  while (Date.now() - start < MAX_WAIT_MS) {
-    const status = await request<{
+  while (Date.now() - start < maxWaitMs) {
+    const job = await request<{
       job_id: string;
       status: string;
-      result?: AnalysisResult;
+      result?: T;
       error?: string;
-    }>(`/analysis/status/${jobId}`);
+    }>(statusEndpoint);
 
-    if (status.status === "completed" && status.result) {
-      return status.result;
-    }
-    if (status.status === "failed") {
-      throw new Error(status.error || "Analysis job failed");
-    }
-    // still pending or running — wait and try again
-    await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed") throw new Error(job.error || "Job failed");
+
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error("Analysis timed out after 15 minutes");
+  throw new Error("Timed out waiting for job to complete");
 }
 
 export const api = {
@@ -53,8 +50,14 @@ export const api = {
     });
   },
 
-  parseRfp: (rfp_id: string) =>
-    request<ParseResult>(`/rfp/${rfp_id}/parse`, { method: "POST" }),
+  /** Fire parse job, then poll until done. No 30s timeout risk. */
+  parseRfp: async (rfp_id: string): Promise<ParseResult> => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      `/rfp/${rfp_id}/parse`,
+      { method: "POST" }
+    );
+    return pollJob<ParseResult>(`/rfp/parse-status/${job_id}`, 10 * 60 * 1000);
+  },
 
   uploadSupplier: (rfp_id: string, file: File) => {
     const formData = new FormData();
@@ -65,17 +68,14 @@ export const api = {
     );
   },
 
-  /**
-   * Start analysis job (returns immediately with job_id),
-   * then poll until done. Safe against Vercel's 30s proxy timeout.
-   */
+  /** Fire analysis job, then poll until done. No 30s timeout risk. */
   runAnalysis: async (rfp_id: string): Promise<AnalysisResult> => {
     const { job_id } = await request<{ job_id: string; status: string }>("/analysis/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfp_id }),
     });
-    return pollAnalysis(job_id);
+    return pollJob<AnalysisResult>(`/analysis/status/${job_id}`, 15 * 60 * 1000);
   },
 
   chat: (
