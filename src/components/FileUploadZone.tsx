@@ -13,10 +13,10 @@ interface FileUploadZoneProps {
 
 export default function FileUploadZone({
   onFileSelect,
-  accept = ".xlsx,.xls,.csv",
+  accept = ".xlsx,.xls,.csv,.pdf,.docx",
   multiple = false,
-  label = "Upload RFP Template",
-  description = "Drag & drop your Excel file here, or click to browse",
+  label = "Upload File",
+  description = "Drag & drop your file here, or click to browse",
   disabled = false,
 }: FileUploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -27,7 +27,8 @@ export default function FileUploadZone({
       e.preventDefault();
       setIsDragging(false);
       if (disabled) return;
-      const files = Array.from(e.dataTransfer.files);
+      const files = Array.from(e.dataTransfer.files ?? []);
+      if (files.length === 0) return;
       setSelectedFiles(files);
       onFileSelect(files);
     },
@@ -35,7 +36,8 @@ export default function FileUploadZone({
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     setSelectedFiles(files);
     onFileSelect(files);
   };
@@ -49,10 +51,7 @@ export default function FileUploadZone({
   return (
     <div className="space-y-3">
       <label
-        onDragOver={(e) => {
-          e.preventDefault();
-          setIsDragging(true);
-        }}
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
         className={cn(
@@ -83,16 +82,11 @@ export default function FileUploadZone({
       {selectedFiles.length > 0 && (
         <div className="space-y-2">
           {selectedFiles.map((file, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 border"
-            >
+            <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 border">
               <FileSpreadsheet className="h-5 w-5 text-success" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{file.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {(file.size / 1024).toFixed(1)} KB
-                </p>
+                <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</p>
               </div>
               <button onClick={() => removeFile(i)} className="p-1 hover:bg-muted rounded">
                 <X className="h-4 w-4 text-muted-foreground" />

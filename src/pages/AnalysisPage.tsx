@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import ScoreDisplay from "@/components/ScoreDisplay";
 import { analysisStore } from "@/lib/analysisStore";
 import type { AnalysisResult, SupplierResult, CategoryScore } from "@/lib/types";
 import {
@@ -26,24 +25,34 @@ export default function AnalysisPage() {
     return (
       <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
         <p className="text-muted-foreground text-lg">No analysis results yet.</p>
-        <Button onClick={() => navigate("/new")} className="gap-2">
+        <Button onClick={() => navigate("/rfp/new")} className="gap-2">
           <PlusCircle className="h-4 w-4" /> Start New Evaluation
         </Button>
       </div>
     );
   }
 
-  const suppliers = [...result.suppliers].sort((a, b) =>
+  const suppliers = [...(result.suppliers ?? [])].sort((a, b) =>
     sortBy === "rank" ? a.rank - b.rank : b.overall_score - a.overall_score
   );
 
+  if (suppliers.length === 0) {
+    return (
+      <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
+        <p className="text-muted-foreground text-lg">Analysis completed but no suppliers were found.</p>
+        <Button onClick={() => navigate("/rfp/new")} className="gap-2">
+          <PlusCircle className="h-4 w-4" /> Try Again
+        </Button>
+      </div>
+    );
+  }
+
   const allCategories = Array.from(
-    new Set(suppliers.flatMap(s => s.category_scores.map(c => c.category)))
+    new Set(suppliers.flatMap(s => (s.category_scores ?? []).map((c: CategoryScore) => c.category)))
   );
 
   const top = suppliers[0];
 
-  // Score color helper
   const scoreColor = (score: number) =>
     score >= 7.5 ? "text-success font-semibold"
     : score >= 5 ? "text-warning font-semibold"
@@ -61,7 +70,7 @@ export default function AnalysisPage() {
             <ArrowUpDown className="h-4 w-4" />
             Sort by {sortBy === "rank" ? "Score" : "Rank"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => navigate("/new")}>
+          <Button size="sm" variant="outline" onClick={() => navigate("/rfp/new")}>
             <PlusCircle className="h-4 w-4 mr-2" /> New
           </Button>
         </div>
@@ -79,7 +88,7 @@ export default function AnalysisPage() {
             <p className="text-sm text-muted-foreground mt-1">{top.recommendation}</p>
           </div>
           <div className="text-right shrink-0">
-            <p className="text-3xl font-bold text-success">{top.overall_score.toFixed(1)}</p>
+            <p className="text-3xl font-bold text-success">{top.overall_score?.toFixed(1)}</p>
             <p className="text-xs text-muted-foreground">out of 10</p>
           </div>
         </CardContent>
@@ -107,7 +116,7 @@ export default function AnalysisPage() {
               </thead>
               <tbody>
                 {suppliers.map(s => {
-                  const catMap = Object.fromEntries(s.category_scores.map(c => [c.category, c.weighted_score]));
+                  const catMap = Object.fromEntries((s.category_scores ?? []).map((c: CategoryScore) => [c.category, c.weighted_score]));
                   const isExpanded = expandedSupplier === s.supplier_id;
                   return (
                     <>
@@ -121,7 +130,7 @@ export default function AnalysisPage() {
                         </td>
                         <td className="p-3 font-medium">{s.supplier_name}</td>
                         <td className="p-3 text-center">
-                          <span className={`text-base ${scoreColor(s.overall_score)}`}>{s.overall_score.toFixed(1)}</span>
+                          <span className={`text-base ${scoreColor(s.overall_score)}`}>{s.overall_score?.toFixed(1)}</span>
                         </td>
                         {allCategories.map(cat => (
                           <td key={cat} className={`p-3 text-center ${scoreColor(catMap[cat] ?? 0)}`}>
@@ -129,24 +138,23 @@ export default function AnalysisPage() {
                           </td>
                         ))}
                         <td className="p-3">
-                          {isExpanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                          {isExpanded
+                            ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                            : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                         </td>
                       </tr>
 
-                      {/* Supplier drill-down */}
                       {isExpanded && (
                         <tr key={`${s.supplier_id}-detail`}>
                           <td colSpan={allCategories.length + 4} className="bg-muted/10 p-4">
                             <div className="space-y-4">
-
-                              {/* Strengths / Weaknesses */}
                               <div className="grid grid-cols-2 gap-4">
                                 <div>
                                   <p className="text-sm font-semibold flex items-center gap-1.5 mb-2">
                                     <TrendingUp className="h-4 w-4 text-success" /> Strengths
                                   </p>
                                   <ul className="space-y-1">
-                                    {s.strengths.map(str => (
+                                    {(s.strengths ?? []).map(str => (
                                       <li key={str} className="text-sm text-muted-foreground flex items-start gap-2">
                                         <span className="text-success mt-0.5">•</span> {str}
                                       </li>
@@ -158,7 +166,7 @@ export default function AnalysisPage() {
                                     <TrendingDown className="h-4 w-4 text-destructive" /> Weaknesses
                                   </p>
                                   <ul className="space-y-1">
-                                    {s.weaknesses.map(w => (
+                                    {(s.weaknesses ?? []).map(w => (
                                       <li key={w} className="text-sm text-muted-foreground flex items-start gap-2">
                                         <span className="text-destructive mt-0.5">•</span> {w}
                                       </li>
@@ -167,16 +175,14 @@ export default function AnalysisPage() {
                                 </div>
                               </div>
 
-                              {/* Per-category question breakdown */}
                               <div>
                                 <p className="text-sm font-semibold mb-2">Question-level Scores</p>
                                 <div className="space-y-2">
-                                  {s.category_scores.map((cat: CategoryScore) => {
+                                  {(s.category_scores ?? []).map((cat: CategoryScore) => {
                                     const catKey = `${s.supplier_id}-${cat.category}`;
                                     const catExpanded = expandedCategory === catKey;
                                     return (
                                       <div key={cat.category} className="rounded-lg border bg-background">
-                                        {/* Category header */}
                                         <button
                                           className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/30 transition-colors"
                                           onClick={e => { e.stopPropagation(); setExpandedCategory(catExpanded ? null : catKey); }}
@@ -184,16 +190,15 @@ export default function AnalysisPage() {
                                           <span className="text-sm font-medium">{cat.category}</span>
                                           <div className="flex items-center gap-3">
                                             <span className={`text-sm font-bold ${scoreColor(cat.weighted_score)}`}>
-                                              {cat.weighted_score.toFixed(1)} / 10
+                                              {cat.weighted_score?.toFixed(1)} / 10
                                             </span>
                                             {catExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                                           </div>
                                         </button>
 
-                                        {/* Question rows */}
                                         {catExpanded && (
                                           <div className="border-t divide-y">
-                                            {cat.questions.map(q => (
+                                            {(cat.questions ?? []).map(q => (
                                               <div key={q.question_id} className="px-4 py-3 space-y-1">
                                                 <div className="flex items-start justify-between gap-4">
                                                   <div className="flex-1">
@@ -211,14 +216,12 @@ export default function AnalysisPage() {
                                                     <p className="text-sm font-medium">{q.question_text}</p>
                                                   </div>
                                                   <span className={`text-base font-bold shrink-0 ${scoreColor(q.score)}`}>
-                                                    {q.score.toFixed(1)}/10
+                                                    {q.score?.toFixed(1)}/10
                                                   </span>
                                                 </div>
-                                                {/* Supplier answer */}
                                                 <div className="rounded bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
                                                   <span className="font-medium text-foreground">Answer: </span>{q.supplier_answer}
                                                 </div>
-                                                {/* AI rationale */}
                                                 <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
                                                   <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-primary" />
                                                   <span>{q.rationale}</span>
@@ -245,7 +248,6 @@ export default function AnalysisPage() {
         </CardContent>
       </Card>
 
-      {/* Final Recommendation */}
       <Card className="border-primary/30">
         <CardContent className="p-6">
           <p className="text-sm font-semibold text-primary mb-2">📋 Final Recommendation</p>

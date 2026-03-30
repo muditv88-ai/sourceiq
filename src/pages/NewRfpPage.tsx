@@ -23,7 +23,7 @@ export default function NewRfpPage() {
   const [copied, setCopied] = useState(false);
 
   const handleRfpUpload = async (files: File[]) => {
-    if (files.length === 0) return;
+    if (!files || files.length === 0) return;
     setStep("parsing");
     setError(null);
     try {
@@ -31,8 +31,9 @@ export default function NewRfpPage() {
       const id = uploadResult.rfp_id;
       setRfpId(id);
       const parsed = await api.parseRfp(id);
-      setQuestions(parsed.questions);
-      setCategories(parsed.categories);
+      // Safe defaults in case backend returns unexpected shape
+      setQuestions(Array.isArray(parsed.questions) ? parsed.questions : []);
+      setCategories(Array.isArray(parsed.categories) ? parsed.categories : []);
       setStep("parsed");
     } catch (err: any) {
       setError(err.message || "Failed to upload and parse RFP");
@@ -41,10 +42,10 @@ export default function NewRfpPage() {
   };
 
   const handleSupplierFilesSelected = (files: File[]) => {
+    if (!files || files.length === 0) return;
     setSupplierFiles(prev => {
       const names = new Set(prev.map(f => f.name));
-      const newFiles = files.filter(f => !names.has(f.name));
-      return [...prev, ...newFiles];
+      return [...prev, ...files.filter(f => !names.has(f.name))];
     });
   };
 
@@ -55,14 +56,13 @@ export default function NewRfpPage() {
   const handleUploadAndAnalyse = async () => {
     if (!rfpId || supplierFiles.length === 0) return;
     setUploadingSuppliers(true);
+    setSuppliersUploaded(0);
     setError(null);
     try {
-      // Upload each supplier file
       for (let i = 0; i < supplierFiles.length; i++) {
         await api.uploadSupplier(rfpId, supplierFiles[i]);
         setSuppliersUploaded(i + 1);
       }
-      // Run analysis
       setStep("analyzing");
       const result = await api.runAnalysis(rfpId);
       analysisStore.setResult(rfpId, result);
@@ -113,7 +113,14 @@ export default function NewRfpPage() {
             <CardTitle>Upload RFP Template</CardTitle>
             <CardDescription>Supports xlsx, xls, csv, pdf, docx</CardDescription>
           </CardHeader>
-          <CardContent><FileUploadZone onFileSelect={handleRfpUpload} /></CardContent>
+          <CardContent>
+            <FileUploadZone
+              onFileSelect={handleRfpUpload}
+              accept=".xlsx,.xls,.csv,.pdf,.docx"
+              label="Upload RFP Template"
+              description="Drag & drop or click to browse"
+            />
+          </CardContent>
         </Card>
       )}
 
@@ -129,7 +136,7 @@ export default function NewRfpPage() {
               <p className="text-sm text-muted-foreground mt-1">
                 {step === "parsing"
                   ? "Extracting questions, categories and weights"
-                  : `Scoring ${supplierFiles.length} supplier(s) across ${categories.length} categories`}
+                  : `Scoring ${supplierFiles.length} supplier(s) across ${categories.length} categories — this may take a minute`}
               </p>
             </div>
           </CardContent>
@@ -155,17 +162,15 @@ export default function NewRfpPage() {
       {/* Parsed state */}
       {step === "parsed" && (
         <div className="space-y-4">
-          {/* Success banner */}
           <Card className="border-success/30">
             <CardContent className="p-4 flex items-center gap-3">
               <CheckCircle2 className="h-5 w-5 text-success" />
               <span className="font-medium">
-                RFP parsed — {questions.length} questions across {categories.length} categories
+                RFP parsed — {questions.length} question{questions.length !== 1 ? "s" : ""} across {categories.length} categor{categories.length !== 1 ? "ies" : "y"}
               </span>
             </CardContent>
           </Card>
 
-          {/* RFP ID */}
           {rfpId && (
             <Card className="border-primary/30 bg-primary/5">
               <CardContent className="p-4 flex items-center justify-between gap-3">
@@ -181,35 +186,37 @@ export default function NewRfpPage() {
             </Card>
           )}
 
-          {/* Extracted questions preview */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Extracted Questions</CardTitle>
-              <CardDescription>AI-identified evaluation criteria from your RFP</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                {questions.map((q) => (
-                  <div key={q.question_id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/40">
-                    <div className="flex flex-col items-center gap-1 shrink-0">
-                      <span className="text-xs font-bold text-primary">{q.question_id}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                        q.question_type === "quantitative"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-purple-100 text-purple-700"
-                      }`}>{q.question_type === "quantitative" ? "QNT" : "QLT"}</span>
+          {questions.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Extracted Questions</CardTitle>
+                <CardDescription>AI-identified evaluation criteria from your RFP</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {questions.map((q) => (
+                    <div key={q.question_id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/40">
+                      <div className="flex flex-col items-center gap-1 shrink-0">
+                        <span className="text-xs font-bold text-primary">{q.question_id}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          q.question_type === "quantitative"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-purple-100 text-purple-700"
+                        }`}>
+                          {q.question_type === "quantitative" ? "QNT" : "QLT"}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{q.question_text}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{q.category} · Weight: {q.weight}%</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground">{q.question_text}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{q.category} · Weight: {q.weight}%</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-          {/* Supplier upload */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Upload Supplier Responses</CardTitle>
@@ -219,6 +226,7 @@ export default function NewRfpPage() {
               <FileUploadZone
                 onFileSelect={handleSupplierFilesSelected}
                 multiple
+                accept=".xlsx,.xls,.csv,.pdf,.docx"
                 label="Add Supplier Response Files"
                 description="Drop files here or click to browse"
               />
