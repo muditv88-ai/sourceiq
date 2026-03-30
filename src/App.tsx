@@ -8,6 +8,7 @@ import NewRfpPage from "@/pages/NewRfpPage";
 import AnalysisPage from "@/pages/AnalysisPage";
 import ScenariosPage from "@/pages/ScenariosPage";
 import CommunicationsPage from "@/pages/CommunicationsPage";
+import PricingPage from "@/pages/PricingPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -19,12 +20,13 @@ const App = () => (
       <BrowserRouter>
         <AppLayout>
           <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/rfp/new" element={<NewRfpPage />} />
-            <Route path="/analysis" element={<AnalysisPage />} />
-            <Route path="/scenarios" element={<ScenariosPage />} />
+            <Route path="/"              element={<DashboardPage />} />
+            <Route path="/rfp/new"       element={<NewRfpPage />} />
+            <Route path="/analysis"      element={<AnalysisPage />} />
+            <Route path="/scenarios"     element={<ScenariosPage />} />
             <Route path="/communications" element={<CommunicationsPage />} />
-            <Route path="*" element={<NotFound />} />
+            <Route path="/pricing"       element={<PricingPage />} />
+            <Route path="*"              element={<NotFound />} />
           </Routes>
         </AppLayout>
       </BrowserRouter>
