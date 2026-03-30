@@ -8,6 +8,29 @@ export interface RFPQuestion {
   scoring_guidance?: string;
 }
 
+// ── Project ───────────────────────────────────────────────────────────────────
+export type ProjectStatus =
+  | "created"
+  | "rfp_uploaded"
+  | "suppliers_uploaded"
+  | "parsed"
+  | "analyzed";
+
+export interface ProjectSupplier {
+  path: string;
+  name: string;
+}
+
+export interface Project {
+  project_id:    string;
+  name:          string;
+  created_at:    string;
+  status:        ProjectStatus;
+  rfp_filename:  string | null;
+  supplier_count: number;
+  suppliers?:    ProjectSupplier[];
+}
+
 // ── Analysis ──────────────────────────────────────────────────────────────────
 export interface QuestionScore {
   question_id:     string;
@@ -60,6 +83,25 @@ export interface AnalysisResult {
   available_exports?:     string[];
 }
 
+// ── Parse ──────────────────────────────────────────────────────────────────────
+export interface ParseResult {
+  rfp_id?:         string;
+  project_id?:     string;
+  status:          string;
+  questions:       RFPQuestion[];
+  categories:      string[];
+  total_questions: number;
+}
+
+// ── Dashboard / legacy ──────────────────────────────────────────────────────────
+export interface RfpSummary {
+  id:             string;
+  filename:       string;
+  status:         "uploaded" | "parsed" | "analyzed";
+  created_at:     string;
+  supplier_count?: number;
+}
+
 // ── Pricing ───────────────────────────────────────────────────────────────────
 export interface PricingLineItem {
   description: string;
@@ -81,7 +123,6 @@ export interface SupplierPricingEntry {
 export interface PricingMatrix {
   descriptions: string[];
   suppliers:    string[];
-  // description -> supplier_name -> SupplierPricingEntry | null
   matrix:       Record<string, Record<string, SupplierPricingEntry | null>>;
 }
 

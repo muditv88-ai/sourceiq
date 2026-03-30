@@ -1,8 +1,8 @@
-import type { AnalysisResult, ParseResult } from "./types";
+import type { AnalysisResult, ParseResult, Project } from "./types";
 
 const BASE_URL = "/api";
 
-// ── Generic helpers ───────────────────────────────────────────────────────────
+// ── Generic helpers ───────────────────────────────────────────────────────────────────
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
@@ -32,7 +32,7 @@ async function downloadFile(path: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** Generic job poller — works for /rfp/parse-status and /analysis/status */
+/** Generic job poller — works for /rfp/parse-status, /projects/parse-status, /analysis/status */
 async function pollJob<T>(
   statusEndpoint: string,
   maxWaitMs = 10 * 60 * 1000,
@@ -55,9 +55,66 @@ async function pollJob<T>(
   throw new Error("Timed out waiting for job to complete");
 }
 
-// ── API surface ───────────────────────────────────────────────────────────────
+// ── API surface ────────────────────────────────────────────────────────────────────
 export const api = {
-  // ── RFP ──────────────────────────────────────────────────────────────────
+
+  // ── Projects ──────────────────────────────────────────────────────────────────
+  listProjects: () =>
+    request<{ projects: Project[] }>("/projects"),
+
+  createProject: (name: string) => {
+    const fd = new FormData();
+    fd.append("name", name);
+    return request<Project>("/projects", { method: "POST", body: fd });
+  },
+
+  getProject: (projectId: string) =>
+    request<Project>(`/projects/${projectId}`),
+
+  deleteProject: (projectId: string) =>
+    request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" }),
+
+  uploadProjectRfp: (projectId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<{ project_id: string; rfp_filename: string; status: string }>(
+      `/projects/${projectId}/rfp`,
+      { method: "POST", body: fd }
+    );
+  },
+
+  uploadProjectSupplier: (projectId: string, file: File, supplierName?: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (supplierName) fd.append("supplier_name", supplierName);
+    return request<{ project_id: string; supplier_filename: string; supplier_name: string; status: string }>(
+      `/projects/${projectId}/supplier`,
+      { method: "POST", body: fd }
+    );
+  },
+
+  removeProjectSupplier: (projectId: string, filename: string) =>
+    request<{ deleted: string }>(`/projects/${projectId}/supplier/${encodeURIComponent(filename)}`, {
+      method: "DELETE",
+    }),
+
+  parseProject: async (projectId: string): Promise<ParseResult> => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      `/projects/${projectId}/parse`,
+      { method: "POST" }
+    );
+    return pollJob<ParseResult>(`/projects/parse-status/${job_id}`, 10 * 60 * 1000);
+  },
+
+  analyzeProject: async (projectId: string): Promise<AnalysisResult> => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      `/projects/${projectId}/analyze`,
+      { method: "POST" }
+    );
+    return pollJob<AnalysisResult>(`/analysis/status/${job_id}`, 15 * 60 * 1000);
+  },
+
+  // ── RFP (legacy flat-file flow) ───────────────────────────────────────────────
   uploadRfp: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -84,7 +141,7 @@ export const api = {
     );
   },
 
-  // ── Analysis ─────────────────────────────────────────────────────────────
+  // ── Analysis ────────────────────────────────────────────────────────────────────
   runAnalysis: async (rfp_id: string): Promise<AnalysisResult> => {
     const { job_id } = await request<{ job_id: string; status: string }>("/analysis/run", {
       method: "POST",
@@ -98,7 +155,7 @@ export const api = {
     return downloadFile(`/analysis/export/${rfpId}?format=${format}`, `analysis_${rfpId}.${format}`);
   },
 
-  // ── Chat ─────────────────────────────────────────────────────────────────
+  // ── Chat ────────────────────────────────────────────────────────────────────────
   chat: (
     messages: Array<{ role: string; content: string }>,
     rfp_id?: string,
@@ -110,7 +167,7 @@ export const api = {
       body: JSON.stringify({ messages, rfp_id, analysis_context }),
     }),
 
-  // ── Scenarios ────────────────────────────────────────────────────────────
+  // ── Scenarios ──────────────────────────────────────────────────────────────────
   runScenario: (params: {
     rfp_id: string;
     weights: Record<string, number>;
@@ -130,7 +187,7 @@ export const api = {
       body: JSON.stringify(params),
     }),
 
-  // ── Communications ───────────────────────────────────────────────────────
+  // ── Communications ─────────────────────────────────────────────────────────────
   draftEmail: (params: {
     rfp_id: string;
     supplier_name: string;
@@ -145,7 +202,7 @@ export const api = {
       }
     ),
 
-  // ── Pricing ──────────────────────────────────────────────────────────────
+  // ── Pricing ───────────────────────────────────────────────────────────────────
   analyzePricing: (rfpId: string) =>
     request<{ job_id: string; status: string }>("/pricing/analyze", {
       method: "POST",
