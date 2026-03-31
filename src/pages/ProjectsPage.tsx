@@ -31,6 +31,15 @@ const CURRENCIES = ["USD", "EUR", "GBP", "INR", "AED", "SGD", "AUD"];
 
 type ViewState = "list" | "detail";
 
+// ── helpers ────────────────────────────────────────────────────────────────────
+/** Convert string[] from API → comma-separated string for the text input */
+const stakeholdersToString = (v?: string[]) =>
+  Array.isArray(v) ? v.join(", ") : (v ?? "");
+
+/** Convert the text-input string → string[] for the API */
+const stringToStakeholders = (v: string): string[] =>
+  v.split(",").map(s => s.trim()).filter(Boolean);
+
 export default function ProjectsPage() {
   const [projects, setProjects]       = useState<Project[]>([]);
   const [loading, setLoading]         = useState(true);
@@ -43,6 +52,8 @@ export default function ProjectsPage() {
   const [busy, setBusy]               = useState(false);
   const [showMeta, setShowMeta]       = useState(false);
   const [meta, setMeta]               = useState<Partial<ProjectMeta>>({});
+  // stakeholders are kept as a plain string in the input for UX; converted on save
+  const [stakeholdersInput, setStakeholdersInput] = useState("");
   const [metaSaving, setMetaSaving]   = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -60,13 +71,25 @@ export default function ProjectsPage() {
     if (!selected) return;
     setMetaSaving(true);
     try {
-      await api.updateProjectMeta(selected.project_id, meta);
+      // Build the payload with correctly typed fields
+      const payload: Partial<ProjectMeta> = {
+        ...meta,
+        // Convert comma-separated string -> string[] expected by backend
+        stakeholders: stringToStakeholders(stakeholdersInput),
+        // Ensure budget is a number or null, never a string
+        budget: meta.budget != null ? Number(meta.budget) : null,
+      };
+      await api.updateProjectMeta(selected.project_id, payload);
       setActionMsg("✓ Project details saved");
       const p = await api.getProject(selected.project_id);
       setSelected(p);
       setProjects(prev => prev.map(x => x.project_id === p.project_id ? p : x));
+      // Sync stakeholders input with latest from server
+      setStakeholdersInput(stakeholdersToString(p.meta?.stakeholders));
     } catch (e: any) {
-      setActionError(e.message);
+      // Fix: extract a readable message instead of stringifying the whole Error object
+      const detail = e?.response?.data?.detail || e?.message || "Failed to save project details";
+      setActionError(typeof detail === "string" ? detail : JSON.stringify(detail));
     } finally {
       setMetaSaving(false);
     }
@@ -81,7 +104,7 @@ export default function ProjectsPage() {
       await fetchProjects();
       openProject(p);
     } catch (e: any) {
-      setActionError(e.message);
+      setActionError(e?.message || "Failed to create project");
     } finally { setBusy(false); }
   };
 
@@ -95,10 +118,13 @@ export default function ProjectsPage() {
   const openProject = (p: Project) => {
     setSelected(p); setView("detail");
     setActionMsg(null); setActionError(null);
-    setShowMeta(false); setMeta(p.meta ?? {});
+    setShowMeta(false);
+    setMeta(p.meta ?? {});
+    // Initialise the plain-string stakeholders input from the array stored in meta
+    setStakeholdersInput(stakeholdersToString(p.meta?.stakeholders));
   };
 
-  // ── Detail view ───────────────────────────────────────────────────────────
+  // ── Detail view ───────────────────────────────────────────────────────────────────
   if (view === "detail" && selected) {
     const sc = getStatus(selected.status);
     return (
@@ -176,9 +202,13 @@ export default function ProjectsPage() {
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Stakeholders</label>
-                <input value={meta.stakeholders ?? ""} onChange={e => setMeta(m => ({ ...m, stakeholders: e.target.value }))}
+                {/* Kept as comma-separated string in the input; serialised to string[] on save */}
+                <input
+                  value={stakeholdersInput}
+                  onChange={e => setStakeholdersInput(e.target.value)}
                   placeholder="e.g. Procurement, Finance, IT"
                   className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+                <p className="text-xs text-muted-foreground">Separate multiple stakeholders with commas</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -205,14 +235,14 @@ export default function ProjectsPage() {
         </Card>
 
         <p className="text-sm text-muted-foreground text-center">
-          Use <strong>New RFP</strong> in the sidebar to upload & parse the RFP document.
+          Use <strong>New RFP</strong> in the sidebar to upload &amp; parse the RFP document.
           Use <strong>Supplier Responses</strong> to manage supplier files and run analysis.
         </p>
       </div>
     );
   }
 
-  // ── List view ─────────────────────────────────────────────────────────────
+  // ── List view ───────────────────────────────────────────────────────────────────
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
