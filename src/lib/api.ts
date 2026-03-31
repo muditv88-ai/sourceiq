@@ -21,7 +21,13 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(error.detail || `API Error: ${res.status}`);
+    // FastAPI validation errors return detail as an array — flatten to a readable string
+    const detail = error.detail;
+    if (Array.isArray(detail)) {
+      const msg = detail.map((e: any) => `${e.loc?.join(".") ?? ""}: ${e.msg}`).join("; ");
+      throw new Error(msg || `API Error: ${res.status}`);
+    }
+    throw new Error(typeof detail === "string" ? detail : `API Error: ${res.status}`);
   }
   return res.json();
 }
@@ -67,27 +73,52 @@ async function pollJob<T>(
   throw new Error("Timed out waiting for job to complete");
 }
 
+/**
+ * The backend stores meta fields (category, description, stakeholders,
+ * timeline, budget, currency) FLAT on the project root object.
+ * The frontend types expect them nested under project.meta.
+ * This helper promotes them into a meta sub-object so the rest of
+ * the UI can read p.meta?.category etc. without changes.
+ */
+function normProject(raw: any): Project {
+  const META_KEYS = ["category", "description", "stakeholders", "timeline", "budget", "currency"] as const;
+  const meta: Partial<ProjectMeta> = {};
+  let hasMeta = false;
+  for (const key of META_KEYS) {
+    if (raw[key] !== undefined && raw[key] !== null) {
+      (meta as any)[key] = raw[key];
+      hasMeta = true;
+    }
+  }
+  return {
+    ...raw,
+    meta: hasMeta ? (meta as ProjectMeta) : (raw.meta ?? undefined),
+  } as Project;
+}
+
 // ── API surface ────────────────────────────────────────────────────────────────────
 export const api = {
 
   // ── Projects ──────────────────────────────────────────────────────────────────
-  listProjects: () =>
-    request<{ projects: Project[] }>("/projects"),
+  listProjects: async () => {
+    const res = await request<{ projects: any[] }>("/projects");
+    return { projects: (res.projects || []).map(normProject) };
+  },
 
   createProject: (name: string) => {
     const fd = new FormData();
     fd.append("name", name);
-    return request<Project>("/projects", { method: "POST", body: fd });
+    return request<Project>("/projects", { method: "POST", body: fd }).then(normProject);
   },
 
   getProject: (projectId: string) =>
-    request<Project>(`/projects/${projectId}`),
+    request<any>(`/projects/${projectId}`).then(normProject),
 
   deleteProject: (projectId: string) =>
     request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" }),
 
   updateProjectMeta: (projectId: string, meta: Partial<ProjectMeta>) =>
-    request<{ project_id: string; meta: ProjectMeta }>(`/projects/${projectId}/meta`, {
+    request<{ project_id: string; updated: Record<string, unknown> }>(`/projects/${projectId}/meta`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(meta),
