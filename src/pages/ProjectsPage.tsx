@@ -7,11 +7,11 @@ import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
 import { analysisStore } from "@/lib/analysisStore";
-import type { Project } from "@/lib/types";
+import type { Project, ProjectMeta, ModuleStates, ModuleStateValue } from "@/lib/types";
 import {
   FolderOpen, Plus, Trash2, Upload, Play, RotateCcw,
   CheckCircle2, Clock, FileText, Users, Loader2,
-  ChevronDown, ChevronUp, X, AlertCircle,
+  X, AlertCircle, Settings2, ChevronDown, ChevronUp,
 } from "lucide-react";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
@@ -22,19 +22,42 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   analyzed:           { label: "Analyzed",           color: "bg-green-100 text-green-700" },
 };
 
+const MODULE_STATE_CONFIG: Record<ModuleStateValue, { label: string; color: string; dot: string }> = {
+  pending:  { label: "Pending",  color: "bg-muted text-muted-foreground",      dot: "bg-muted-foreground" },
+  active:   { label: "Active",   color: "bg-blue-100 text-blue-700",           dot: "bg-blue-500 animate-pulse" },
+  complete: { label: "Complete", color: "bg-green-100 text-green-700",         dot: "bg-green-500" },
+  error:    { label: "Error",    color: "bg-red-100 text-red-700",             dot: "bg-red-500" },
+};
+
+function ModuleStatePill({ label, state }: { label: string; state: ModuleStateValue }) {
+  const cfg = MODULE_STATE_CONFIG[state];
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${cfg.color}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
+      {label}
+    </span>
+  );
+}
+
+const CURRENCIES = ["USD", "EUR", "GBP", "INR", "AED", "SGD", "AUD"];
+
 type ViewState = "list" | "detail";
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
-  const [projects, setProjects]       = useState<Project[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [creating, setCreating]       = useState(false);
-  const [newName, setNewName]         = useState("");
-  const [view, setView]               = useState<ViewState>("list");
-  const [selected, setSelected]       = useState<Project | null>(null);
-  const [actionMsg, setActionMsg]     = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [busy, setBusy]               = useState(false);
+  const [projects, setProjects]         = useState<Project[]>([]);
+  const [loading, setLoading]           = useState(true);
+  const [creating, setCreating]         = useState(false);
+  const [newName, setNewName]           = useState("");
+  const [view, setView]                 = useState<ViewState>("list");
+  const [selected, setSelected]         = useState<Project | null>(null);
+  const [actionMsg, setActionMsg]       = useState<string | null>(null);
+  const [actionError, setActionError]   = useState<string | null>(null);
+  const [busy, setBusy]                 = useState(false);
+  const [showMeta, setShowMeta]         = useState(false);
+  const [meta, setMeta]                 = useState<Partial<ProjectMeta>>({});
+  const [metaSaving, setMetaSaving]     = useState(false);
+  const [moduleStates, setModuleStates] = useState<ModuleStates | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   const fetchProjects = async () => {
@@ -54,6 +77,25 @@ export default function ProjectsPage() {
     const p = await api.getProject(id);
     setSelected(p);
     setProjects(prev => prev.map(x => x.project_id === id ? p : x));
+    // also refresh module states
+    try {
+      const ms = await api.getModuleStates(id);
+      setModuleStates(ms);
+    } catch { /* ignore if backend not yet updated */ }
+  };
+
+  const saveMeta = async () => {
+    if (!selected) return;
+    setMetaSaving(true);
+    try {
+      await api.updateProjectMeta(selected.project_id, meta);
+      setActionMsg("✓ Project details saved");
+      await refreshSelected(selected.project_id);
+    } catch (e: any) {
+      setActionError(e.message);
+    } finally {
+      setMetaSaving(false);
+    }
   };
 
   // ── Create project
@@ -87,6 +129,11 @@ export default function ProjectsPage() {
     setView("detail");
     setActionMsg(null);
     setActionError(null);
+    setShowMeta(false);
+    setMeta(p.meta ?? {});
+    setModuleStates(null);
+    // load module states
+    api.getModuleStates(p.project_id).then(setModuleStates).catch(() => {});
   };
 
   // ── Upload RFP
@@ -162,7 +209,7 @@ export default function ProjectsPage() {
   // ────────────────────────── RENDER ──────────────────────────
 
   if (view === "detail" && selected) {
-    const sc = STATUS_CONFIG[selected.status] ?? STATUS_CONFIG.created;
+    const sc       = STATUS_CONFIG[selected.status] ?? STATUS_CONFIG.created;
     const canParse   = !!selected.rfp_filename;
     const canAnalyze = !!selected.rfp_filename && (selected.supplier_count ?? 0) > 0;
     const suppliers  = selected.suppliers ?? [];
@@ -181,6 +228,15 @@ export default function ProjectsPage() {
           <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${sc.color}`}>{sc.label}</span>
         </div>
 
+        {/* Module state pills */}
+        {moduleStates && (
+          <div className="flex flex-wrap gap-2">
+            <ModuleStatePill label="RFP"                state={moduleStates.rfp_state} />
+            <ModuleStatePill label="Technical Analysis" state={moduleStates.technical_state} />
+            <ModuleStatePill label="Pricing Analysis"  state={moduleStates.pricing_state} />
+          </div>
+        )}
+
         {/* Action feedback */}
         {actionMsg && !actionError && (
           <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-4 py-2">
@@ -192,6 +248,95 @@ export default function ProjectsPage() {
             <AlertCircle className="h-4 w-4 shrink-0" />{actionError}
           </div>
         )}
+
+        {/* Project Meta (collapsible) */}
+        <Card>
+          <CardHeader
+            className="cursor-pointer select-none"
+            onClick={() => setShowMeta(v => !v)}
+          >
+            <CardTitle className="text-base flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2">
+                <Settings2 className="h-4 w-4" /> Project Details
+              </span>
+              {showMeta ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </CardTitle>
+            {!showMeta && (
+              <CardDescription>
+                {selected.meta?.category ? `${selected.meta.category}` : "Category, description, stakeholders, budget…"}
+              </CardDescription>
+            )}
+          </CardHeader>
+          {showMeta && (
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Category</label>
+                  <input
+                    value={meta.category ?? ""}
+                    onChange={e => setMeta(m => ({ ...m, category: e.target.value }))}
+                    placeholder="e.g. IT Infrastructure"
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Timeline</label>
+                  <input
+                    value={meta.timeline ?? ""}
+                    onChange={e => setMeta(m => ({ ...m, timeline: e.target.value }))}
+                    placeholder="e.g. Q3 2026"
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Description</label>
+                <textarea
+                  value={meta.description ?? ""}
+                  onChange={e => setMeta(m => ({ ...m, description: e.target.value }))}
+                  placeholder="Brief description of this RFP project"
+                  rows={2}
+                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Stakeholders</label>
+                <input
+                  value={meta.stakeholders ?? ""}
+                  onChange={e => setMeta(m => ({ ...m, stakeholders: e.target.value }))}
+                  placeholder="e.g. Procurement, Finance, IT"
+                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Budget</label>
+                  <input
+                    type="number"
+                    value={meta.budget ?? ""}
+                    onChange={e => setMeta(m => ({ ...m, budget: e.target.value ? Number(e.target.value) : null }))}
+                    placeholder="0"
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Currency</label>
+                  <select
+                    value={meta.currency ?? "USD"}
+                    onChange={e => setMeta(m => ({ ...m, currency: e.target.value }))}
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+              <Button onClick={saveMeta} disabled={metaSaving} size="sm" className="gap-1.5">
+                {metaSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                Save Details
+              </Button>
+            </CardContent>
+          )}
+        </Card>
 
         {/* RFP Upload */}
         <Card>
@@ -373,6 +518,7 @@ export default function ProjectsPage() {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{p.name}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">
+                    {p.meta?.category ? <span className="font-medium text-foreground/70">{p.meta.category} · </span> : null}
                     {p.rfp_filename ? p.rfp_filename : "No RFP yet"}
                     {p.supplier_count ? ` · ${p.supplier_count} supplier${p.supplier_count !== 1 ? "s" : ""}` : ""}
                   </p>

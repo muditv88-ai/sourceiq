@@ -1,4 +1,4 @@
-import type { AnalysisResult, ParseResult, Project } from "./types";
+import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, RFPStructuredView } from "./types";
 import { getToken } from "./auth";
 
 const BASE_URL = "/api";
@@ -15,7 +15,6 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
     },
   });
   if (res.status === 401) {
-    // Token expired or invalid — clear session and redirect to login
     import("./auth").then(({ clearSession }) => clearSession());
     window.location.href = "/login";
     throw new Error("Session expired");
@@ -87,6 +86,36 @@ export const api = {
   deleteProject: (projectId: string) =>
     request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" }),
 
+  updateProjectMeta: (projectId: string, meta: Partial<ProjectMeta>) =>
+    request<{ project_id: string; meta: ProjectMeta }>(`/projects/${projectId}/meta`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(meta),
+    }),
+
+  getModuleStates: (projectId: string) =>
+    request<ModuleStates>(`/projects/${projectId}/module-states`),
+
+  updateModuleState: (projectId: string, module: keyof ModuleStates, state: ModuleStateValue) =>
+    request<ModuleStates>(`/projects/${projectId}/module-states`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ module, state }),
+    }),
+
+  getFeatureFlags: (projectId: string) =>
+    request<FeatureFlags>(`/projects/${projectId}/feature-flags`),
+
+  updateFeatureFlags: (projectId: string, flags: Partial<FeatureFlags>) =>
+    request<FeatureFlags>(`/projects/${projectId}/feature-flags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    }),
+
+  getAuditLog: (projectId: string) =>
+    request<{ entries: AuditLogEntry[] }>(`/projects/${projectId}/audit-log`),
+
   uploadProjectRfp: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -124,10 +153,10 @@ export const api = {
       `/projects/${projectId}/analyze`,
       { method: "POST" }
     );
-    return pollJob<AnalysisResult>(`/analysis/status/${job_id}`, 15 * 60 * 1000);
+    return pollJob<AnalysisResult>(`/technical-analysis/status/${job_id}`, 15 * 60 * 1000);
   },
 
-  // ── RFP (legacy flat-file flow) ───────────────────────────────────────────────
+  // ── RFP ──────────────────────────────────────────────────────────────────────
   uploadRfp: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -154,31 +183,39 @@ export const api = {
     );
   },
 
-  // ── Analysis ────────────────────────────────────────────────────────────────────
+  getRfpStructuredView: (projectId: string) =>
+    request<RFPStructuredView>(`/rfp/${projectId}/structured-view`),
+
+  // ── Technical Analysis ────────────────────────────────────────────────────────
   runAnalysis: async (rfp_id: string): Promise<AnalysisResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>("/analysis/run", {
+    const { job_id } = await request<{ job_id: string; status: string }>("/technical-analysis/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfp_id }),
     });
-    return pollJob<AnalysisResult>(`/analysis/status/${job_id}`, 15 * 60 * 1000);
+    return pollJob<AnalysisResult>(`/technical-analysis/status/${job_id}`, 15 * 60 * 1000);
   },
 
   exportAnalysis(rfpId: string, format: string) {
-    return downloadFile(`/analysis/export/${rfpId}?format=${format}`, `analysis_${rfpId}.${format}`);
+    return downloadFile(`/technical-analysis/export/${rfpId}?format=${format}`, `analysis_${rfpId}.${format}`);
   },
 
   // ── Chat ────────────────────────────────────────────────────────────────────────
   chat: (
     messages: Array<{ role: string; content: string }>,
     rfp_id?: string,
-    analysis_context?: unknown
+    analysis_context?: unknown,
+    project_id?: string,
+    actor?: string
   ) =>
     request<{ message: string; action: Record<string, unknown> | null }>("/chat/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, rfp_id, analysis_context }),
+      body: JSON.stringify({ messages, rfp_id, analysis_context, project_id, actor }),
     }),
+
+  getChatAuditLog: (projectId: string) =>
+    request<{ entries: AuditLogEntry[] }>(`/chat/audit/${projectId}`),
 
   // ── Scenarios ──────────────────────────────────────────────────────────────────
   runScenario: (params: {
@@ -215,28 +252,28 @@ export const api = {
       }
     ),
 
-  // ── Pricing ───────────────────────────────────────────────────────────────────
+  // ── Pricing Analysis ────────────────────────────────────────────────────────────
   analyzePricing: (rfpId: string) =>
-    request<{ job_id: string; status: string }>("/pricing/analyze", {
+    request<{ job_id: string; status: string }>("/pricing-analysis/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfp_id: rfpId }),
     }),
 
   getPricingStatus: (jobId: string) =>
-    request<{ job_id: string; status: string; result?: unknown; error?: string }>(`/pricing/status/${jobId}`),
+    request<{ job_id: string; status: string; result?: unknown; error?: string }>(`/pricing-analysis/status/${jobId}`),
 
   getPricingResult: (rfpId: string) =>
-    request<unknown>(`/pricing/result/${rfpId}`),
+    request<unknown>(`/pricing-analysis/result/${rfpId}`),
 
   correctPricing: (rfpId: string, supplierName: string, corrections: unknown[]) =>
-    request<unknown>("/pricing/correct", {
+    request<unknown>("/pricing-analysis/correct", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfp_id: rfpId, supplier_name: supplierName, corrections }),
     }),
 
   exportPricing(rfpId: string, format: "xlsx" | "csv") {
-    return downloadFile(`/pricing/export/${rfpId}?format=${format}`, `pricing_${rfpId}.${format}`);
+    return downloadFile(`/pricing-analysis/export/${rfpId}?format=${format}`, `pricing_${rfpId}.${format}`);
   },
 };

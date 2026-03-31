@@ -26,8 +26,8 @@ const navItems = [
   { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
   { to: "/projects",       icon: FolderOpen,        label: "Projects" },
   { to: "/rfp/new",        icon: FilePlus,          label: "New RFP" },
-  { to: "/analysis",       icon: BarChart3,         label: "Analysis" },
-  { to: "/pricing",        icon: DollarSign,        label: "Pricing" },
+  { to: "/analysis",       icon: BarChart3,         label: "Technical Analysis" },
+  { to: "/pricing",        icon: DollarSign,        label: "Pricing Analysis" },
   { to: "/scenarios",      icon: SlidersHorizontal, label: "Scenarios" },
   { to: "/communications", icon: Mail,              label: "Communications" },
 ];
@@ -51,7 +51,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <FileSpreadsheet className="h-5 w-5 text-sidebar-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-base font-bold tracking-tight">ProcureIQ</h1>
+            <h1 className="text-base font-bold tracking-tight">SourceIQ</h1>
             <p className="text-xs text-sidebar-foreground/60">RFP Evaluator</p>
           </div>
         </div>

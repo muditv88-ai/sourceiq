@@ -16,19 +16,81 @@ export type ProjectStatus =
   | "parsed"
   | "analyzed";
 
+export type ModuleStateValue = "pending" | "active" | "complete" | "error";
+
+export interface ModuleStates {
+  rfp_state:        ModuleStateValue;
+  technical_state:  ModuleStateValue;
+  pricing_state:    ModuleStateValue;
+}
+
+export interface ProjectMeta {
+  category?:     string;
+  description?:  string;
+  stakeholders?: string;
+  timeline?:     string;
+  budget?:       number | null;
+  currency?:     string;
+}
+
+export interface FeatureFlags {
+  rfp_structured_view:   boolean;
+  technical_analysis:    boolean;
+  pricing_scenarios:     boolean;
+  chatbot_actions:       boolean;
+  audit_logging:         boolean;
+}
+
+export interface AuditLogEntry {
+  timestamp: string;
+  actor:     string;
+  action:    string;
+  detail?:   Record<string, unknown>;
+}
+
+export interface SupplierInfoField {
+  label:    string;
+  value:    string;
+  editable: boolean;
+}
+
+export interface TechnicalQuestionField {
+  question_id: string;
+  category:    string;
+  question_text: string;
+  question_type: string;
+  weight:      number;
+}
+
+export interface PricingField {
+  description: string;
+  category:    string;
+  quantity:    number;
+}
+
+export interface RFPStructuredView {
+  supplier_info:        SupplierInfoField[];
+  technical_questions:  TechnicalQuestionField[];
+  pricing_fields:       PricingField[];
+  parse_warnings:       string[];
+}
+
 export interface ProjectSupplier {
   path: string;
   name: string;
 }
 
 export interface Project {
-  project_id:    string;
-  name:          string;
-  created_at:    string;
-  status:        ProjectStatus;
-  rfp_filename:  string | null;
+  project_id:     string;
+  name:           string;
+  created_at:     string;
+  status:         ProjectStatus;
+  rfp_filename:   string | null;
   supplier_count: number;
-  suppliers?:    ProjectSupplier[];
+  suppliers?:     ProjectSupplier[];
+  // v2 additions — all optional so old records still deserialise
+  module_states?: ModuleStates;
+  meta?:          ProjectMeta;
 }
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
