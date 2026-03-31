@@ -9,6 +9,7 @@ import {
   FileSpreadsheet,
   DollarSign,
   FolderOpen,
+  Users,
   LogOut,
   UserCircle2,
 } from "lucide-react";
@@ -23,13 +24,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const navItems = [
-  { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
-  { to: "/projects",       icon: FolderOpen,        label: "Projects" },
-  { to: "/rfp/new",        icon: FilePlus,          label: "New RFP" },
-  { to: "/analysis",       icon: BarChart3,         label: "Technical Analysis" },
-  { to: "/pricing",        icon: DollarSign,        label: "Pricing Analysis" },
-  { to: "/scenarios",      icon: SlidersHorizontal, label: "Scenarios" },
-  { to: "/communications", icon: Mail,              label: "Communications" },
+  { to: "/",             icon: LayoutDashboard,  label: "Dashboard" },
+  { to: "/projects",     icon: FolderOpen,        label: "Projects" },
+  { to: "/rfp/new",      icon: FilePlus,          label: "New RFP" },
+  { to: "/suppliers",    icon: Users,             label: "Supplier Responses" },
+  { to: "/analysis",     icon: BarChart3,         label: "Technical Analysis" },
+  { to: "/pricing",      icon: DollarSign,        label: "Pricing Analysis" },
+  { to: "/scenarios",    icon: SlidersHorizontal, label: "Scenarios" },
+  { to: "/communications", icon: Mail,            label: "Communications" },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

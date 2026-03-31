@@ -1,20 +1,22 @@
+/**
+ * ProjectsPage — Project management only.
+ * Create / rename / delete projects and set metadata (category, budget, timeline, etc.).
+ * RFP upload lives in New RFP.
+ * Supplier file management lives in Supplier Responses.
+ */
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
-import { analysisStore } from "@/lib/analysisStore";
-import type { Project, ProjectMeta, ModuleStates, ModuleStateValue } from "@/lib/types";
+import type { Project, ProjectMeta } from "@/lib/types";
 import {
-  FolderOpen, Plus, Trash2, Upload, Play, RotateCcw,
-  CheckCircle2, FileText, Users, Loader2,
+  FolderOpen, Plus, Trash2,
+  CheckCircle2, Loader2,
   X, AlertCircle, Settings2, ChevronDown, ChevronUp,
 } from "lucide-react";
 
-// ── Config maps ────────────────────────────────────────────────────────────────
 const STATUS_FALLBACK = { label: "Unknown", color: "bg-muted text-muted-foreground" };
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   created:            { label: "Created",         color: "bg-muted text-muted-foreground" },
@@ -25,69 +27,34 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 };
 const getStatus = (s: string) => STATUS_CONFIG[s] ?? STATUS_FALLBACK;
 
-const MODULE_FALLBACK = { label: "Unknown", color: "bg-muted text-muted-foreground", dot: "bg-muted-foreground" };
-const MODULE_STATE_CONFIG: Record<string, { label: string; color: string; dot: string }> = {
-  pending:  { label: "Pending",  color: "bg-muted text-muted-foreground",  dot: "bg-muted-foreground" },
-  active:   { label: "Active",   color: "bg-blue-100 text-blue-700",       dot: "bg-blue-500 animate-pulse" },
-  complete: { label: "Complete", color: "bg-green-100 text-green-700",     dot: "bg-green-500" },
-  error:    { label: "Error",    color: "bg-red-100 text-red-700",         dot: "bg-red-500" },
-};
-const getModuleState = (s: string | undefined | null) =>
-  (s ? MODULE_STATE_CONFIG[s] : undefined) ?? MODULE_FALLBACK;
-
-function ModuleStatePill({ label, state }: { label: string; state: ModuleStateValue | string | undefined | null }) {
-  const cfg = getModuleState(state as string);
-  return (
-    <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${cfg.color}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
-      {label}
-    </span>
-  );
-}
-
 const CURRENCIES = ["USD", "EUR", "GBP", "INR", "AED", "SGD", "AUD"];
 
 type ViewState = "list" | "detail";
 
 export default function ProjectsPage() {
-  const navigate = useNavigate();
-  const [projects, setProjects]         = useState<Project[]>([]);
-  const [loading, setLoading]           = useState(true);
-  const [creating, setCreating]         = useState(false);
-  const [newName, setNewName]           = useState("");
-  const [view, setView]                 = useState<ViewState>("list");
-  const [selected, setSelected]         = useState<Project | null>(null);
-  const [actionMsg, setActionMsg]       = useState<string | null>(null);
-  const [actionError, setActionError]   = useState<string | null>(null);
-  const [busy, setBusy]                 = useState(false);
-  const [showMeta, setShowMeta]         = useState(false);
-  const [meta, setMeta]                 = useState<Partial<ProjectMeta>>({});
-  const [metaSaving, setMetaSaving]     = useState(false);
-  const [moduleStates, setModuleStates] = useState<ModuleStates | null>(null);
+  const [projects, setProjects]       = useState<Project[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [creating, setCreating]       = useState(false);
+  const [newName, setNewName]         = useState("");
+  const [view, setView]               = useState<ViewState>("list");
+  const [selected, setSelected]       = useState<Project | null>(null);
+  const [actionMsg, setActionMsg]     = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy]               = useState(false);
+  const [showMeta, setShowMeta]       = useState(false);
+  const [meta, setMeta]               = useState<Partial<ProjectMeta>>({});
+  const [metaSaving, setMetaSaving]   = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   const fetchProjects = async () => {
     try {
       const res = await api.listProjects();
       setProjects(res.projects || []);
-    } catch {
-      // silently handle
-    } finally {
-      setLoading(false);
-    }
+    } catch { /* silent */ }
+    finally { setLoading(false); }
   };
 
   useEffect(() => { fetchProjects(); }, []);
-
-  const refreshSelected = async (id: string) => {
-    const p = await api.getProject(id);
-    setSelected(p);
-    setProjects(prev => prev.map(x => x.project_id === id ? p : x));
-    try {
-      const ms = await api.getModuleStates(id);
-      setModuleStates(ms);
-    } catch { /* ignore if endpoint not yet available */ }
-  };
 
   const saveMeta = async () => {
     if (!selected) return;
@@ -95,7 +62,9 @@ export default function ProjectsPage() {
     try {
       await api.updateProjectMeta(selected.project_id, meta);
       setActionMsg("✓ Project details saved");
-      await refreshSelected(selected.project_id);
+      const p = await api.getProject(selected.project_id);
+      setSelected(p);
+      setProjects(prev => prev.map(x => x.project_id === p.project_id ? p : x));
     } catch (e: any) {
       setActionError(e.message);
     } finally {
@@ -108,15 +77,12 @@ export default function ProjectsPage() {
     setBusy(true);
     try {
       const p = await api.createProject(newName.trim());
-      setNewName("");
-      setCreating(false);
+      setNewName(""); setCreating(false);
       await fetchProjects();
       openProject(p);
     } catch (e: any) {
       setActionError(e.message);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   const handleDelete = async (projectId: string) => {
@@ -127,112 +93,27 @@ export default function ProjectsPage() {
   };
 
   const openProject = (p: Project) => {
-    setSelected(p);
-    setView("detail");
-    setActionMsg(null);
-    setActionError(null);
-    setShowMeta(false);
-    setMeta(p.meta ?? {});
-    setModuleStates(null);
-    api.getModuleStates(p.project_id).then(setModuleStates).catch(() => {});
+    setSelected(p); setView("detail");
+    setActionMsg(null); setActionError(null);
+    setShowMeta(false); setMeta(p.meta ?? {});
   };
 
-  const handleRfpUpload = async (files: File[]) => {
-    if (!selected || !files[0]) return;
-    setBusy(true); setActionMsg("Uploading RFP..."); setActionError(null);
-    try {
-      await api.uploadProjectRfp(selected.project_id, files[0]);
-      setActionMsg(`✓ RFP uploaded: ${files[0].name}`);
-      await refreshSelected(selected.project_id);
-    } catch (e: any) {
-      setActionError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSupplierUpload = async (files: File[]) => {
-    if (!selected || !files.length) return;
-    setBusy(true); setActionError(null);
-    for (let i = 0; i < files.length; i++) {
-      setActionMsg(`Uploading supplier ${i + 1}/${files.length}: ${files[i].name}`);
-      try {
-        await api.uploadProjectSupplier(selected.project_id, files[i]);
-      } catch (e: any) {
-        setActionError(e.message);
-      }
-    }
-    setActionMsg(`✓ ${files.length} supplier file(s) uploaded`);
-    await refreshSelected(selected.project_id);
-    setBusy(false);
-  };
-
-  const handleRemoveSupplier = async (filename: string) => {
-    if (!selected) return;
-    await api.removeProjectSupplier(selected.project_id, filename);
-    await refreshSelected(selected.project_id);
-  };
-
-  const handleParse = async () => {
-    if (!selected) return;
-    setBusy(true); setActionMsg("Parsing RFP with AI..."); setActionError(null);
-    try {
-      await api.parseProject(selected.project_id);
-      setActionMsg("✓ RFP parsed successfully");
-      await refreshSelected(selected.project_id);
-    } catch (e: any) {
-      setActionError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!selected) return;
-    setBusy(true); setActionMsg("Running analysis..."); setActionError(null);
-    try {
-      const result = await api.analyzeProject(selected.project_id);
-      analysisStore.setResult(selected.project_id, result);
-      await refreshSelected(selected.project_id);
-      navigate("/analysis");
-    } catch (e: any) {
-      setActionError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // ── Detail view ────────────────────────────────────────────────────────────
+  // ── Detail view ───────────────────────────────────────────────────────────
   if (view === "detail" && selected) {
-    const sc         = getStatus(selected.status);
-    const canParse   = !!selected.rfp_filename;
-    const canAnalyze = !!selected.rfp_filename && (selected.supplier_count ?? 0) > 0;
-    const suppliers  = selected.suppliers ?? [];
-
+    const sc = getStatus(selected.status);
     return (
       <div className="max-w-3xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button onClick={() => setView("list")} className="text-muted-foreground hover:text-foreground transition-colors text-sm">
-              ← Projects
-            </button>
+            <button onClick={() => setView("list")} className="text-muted-foreground hover:text-foreground transition-colors text-sm">← Projects</button>
             <span className="text-muted-foreground">/</span>
             <h1 className="text-xl font-bold">{selected.name}</h1>
           </div>
           <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${sc.color}`}>{sc.label}</span>
         </div>
 
-        {/* Module state pills */}
-        {moduleStates && (
-          <div className="flex flex-wrap gap-2">
-            <ModuleStatePill label="RFP"                state={moduleStates.rfp_state} />
-            <ModuleStatePill label="Technical Analysis" state={moduleStates.technical_state} />
-            <ModuleStatePill label="Pricing Analysis"   state={moduleStates.pricing_state} />
-          </div>
-        )}
-
-        {/* Feedback banners */}
+        {/* Feedback */}
         {actionMsg && !actionError && (
           <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-4 py-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />{actionMsg}
@@ -244,7 +125,23 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        {/* Project Details (collapsible) */}
+        {/* Summary row */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="p-3 rounded-lg bg-muted/40 text-center">
+            <p className="text-xs text-muted-foreground">RFP</p>
+            <p className="text-sm font-semibold mt-0.5 truncate">{selected.rfp_filename ?? "—"}</p>
+          </div>
+          <div className="p-3 rounded-lg bg-muted/40 text-center">
+            <p className="text-xs text-muted-foreground">Suppliers</p>
+            <p className="text-sm font-semibold mt-0.5">{selected.supplier_count ?? 0}</p>
+          </div>
+          <div className="p-3 rounded-lg bg-muted/40 text-center">
+            <p className="text-xs text-muted-foreground">Status</p>
+            <p className="text-sm font-semibold mt-0.5">{sc.label}</p>
+          </div>
+        </div>
+
+        {/* Meta card */}
         <Card>
           <CardHeader className="cursor-pointer select-none" onClick={() => setShowMeta(v => !v)}>
             <CardTitle className="text-base flex items-center justify-between gap-2">
@@ -252,9 +149,7 @@ export default function ProjectsPage() {
               {showMeta ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </CardTitle>
             {!showMeta && (
-              <CardDescription>
-                {selected.meta?.category ?? "Category, description, stakeholders, budget…"}
-              </CardDescription>
+              <CardDescription>{selected.meta?.category ?? "Category, description, stakeholders, budget…"}</CardDescription>
             )}
           </CardHeader>
           {showMeta && (
@@ -309,88 +204,21 @@ export default function ProjectsPage() {
           )}
         </Card>
 
-        {/* RFP Upload */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" /> RFP Document</CardTitle>
-            <CardDescription>
-              {selected.rfp_filename ? `Current file: ${selected.rfp_filename} — re-upload to replace` : "Upload the RFP template file once"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {selected.rfp_filename ? (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 text-sm">
-                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
-                <span className="font-medium flex-1 truncate">{selected.rfp_filename}</span>
-                <FileUploadZone onFileSelect={handleRfpUpload} accept=".xlsx,.xls,.csv,.pdf,.docx" label="Replace" compact />
-              </div>
-            ) : (
-              <FileUploadZone onFileSelect={handleRfpUpload} accept=".xlsx,.xls,.csv,.pdf,.docx"
-                label="Upload RFP Template" description="Drag & drop or click — xlsx, xls, csv, pdf, docx" />
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Supplier Files */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Supplier Responses</CardTitle>
-            <CardDescription>Upload once, re-run analysis any number of times</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <FileUploadZone onFileSelect={handleSupplierUpload} multiple accept=".xlsx,.xls,.csv,.pdf,.docx"
-              label="Add Supplier Files" description="Drop one file per supplier" />
-            {suppliers.length > 0 && (
-              <div className="space-y-1.5">
-                {suppliers.map((s) => {
-                  const fname = s.path.split(/[\\/]/).pop() ?? s.path;
-                  return (
-                    <div key={s.path} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 text-sm">
-                      <Upload className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="flex-1 font-medium truncate">{s.name}</span>
-                      <span className="text-xs text-muted-foreground truncate max-w-[160px]">{fname}</span>
-                      <button onClick={() => handleRemoveSupplier(fname)}
-                        className="text-muted-foreground hover:text-destructive transition-colors">
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Actions */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Run Analysis</CardTitle>
-            <CardDescription>Files are stored — no re-upload needed for subsequent runs</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col sm:flex-row gap-3">
-            <Button variant="outline" onClick={handleParse} disabled={!canParse || busy} className="gap-2 flex-1">
-              {busy && actionMsg?.includes("Parsing")
-                ? <><Loader2 className="h-4 w-4 animate-spin" /> Parsing...</>
-                : <><RotateCcw className="h-4 w-4" /> Parse RFP</>}
-            </Button>
-            <Button onClick={handleAnalyze} disabled={!canAnalyze || busy} className="gap-2 flex-1">
-              {busy && actionMsg?.includes("analysis")
-                ? <><Loader2 className="h-4 w-4 animate-spin" /> Analysing...</>
-                : <><Play className="h-4 w-4" /> Run Analysis ({selected.supplier_count} supplier{selected.supplier_count !== 1 ? "s" : ""})</>}
-            </Button>
-          </CardContent>
-        </Card>
+        <p className="text-sm text-muted-foreground text-center">
+          Use <strong>New RFP</strong> in the sidebar to upload & parse the RFP document.
+          Use <strong>Supplier Responses</strong> to manage supplier files and run analysis.
+        </p>
       </div>
     );
   }
 
-  // ── List view ──────────────────────────────────────────────────────────────
+  // ── List view ─────────────────────────────────────────────────────────────
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Projects</h1>
-          <p className="text-muted-foreground mt-1">Create a project, upload files once, run analysis repeatedly</p>
+          <p className="text-muted-foreground mt-1">Create and manage your RFP evaluation projects</p>
         </div>
         <Button onClick={() => { setCreating(true); setTimeout(() => nameRef.current?.focus(), 50); }} className="gap-2">
           <Plus className="h-4 w-4" /> New Project
@@ -424,7 +252,7 @@ export default function ProjectsPage() {
             <FolderOpen className="h-12 w-12 text-muted-foreground/40" />
             <div>
               <p className="font-semibold text-lg">No projects yet</p>
-              <p className="text-sm text-muted-foreground mt-1">Create a project to upload your RFP and supplier files once and run analysis repeatedly</p>
+              <p className="text-sm text-muted-foreground mt-1">Create a project to get started</p>
             </div>
             <Button onClick={() => { setCreating(true); setTimeout(() => nameRef.current?.focus(), 50); }} className="gap-2 mt-2">
               <Plus className="h-4 w-4" /> Create First Project

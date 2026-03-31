@@ -10,6 +10,7 @@ import LoginPage from "@/pages/LoginPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ProjectsPage from "@/pages/ProjectsPage";
 import NewRfpPage from "@/pages/NewRfpPage";
+import SupplierResponsesPage from "@/pages/SupplierResponsesPage";
 import AnalysisPage from "@/pages/AnalysisPage";
 import ScenariosPage from "@/pages/ScenariosPage";
 import CommunicationsPage from "@/pages/CommunicationsPage";
@@ -35,14 +36,15 @@ const App = () => (
                 <AuthGuard>
                   <AppLayout>
                     <Routes>
-                      <Route path="/"               element={<DashboardPage />} />
-                      <Route path="/projects"        element={<ProjectsPage />} />
-                      <Route path="/rfp/new"         element={<NewRfpPage />} />
-                      <Route path="/analysis"        element={<AnalysisPage />} />
-                      <Route path="/scenarios"       element={<ScenariosPage />} />
-                      <Route path="/communications"  element={<CommunicationsPage />} />
-                      <Route path="/pricing"         element={<PricingPage />} />
-                      <Route path="*"                element={<NotFound />} />
+                      <Route path="/"                  element={<DashboardPage />} />
+                      <Route path="/projects"          element={<ProjectsPage />} />
+                      <Route path="/rfp/new"           element={<NewRfpPage />} />
+                      <Route path="/suppliers"         element={<SupplierResponsesPage />} />
+                      <Route path="/analysis"          element={<AnalysisPage />} />
+                      <Route path="/pricing"           element={<PricingPage />} />
+                      <Route path="/scenarios"         element={<ScenariosPage />} />
+                      <Route path="/communications"    element={<CommunicationsPage />} />
+                      <Route path="*"                  element={<NotFound />} />
                     </Routes>
                   </AppLayout>
                 </AuthGuard>
