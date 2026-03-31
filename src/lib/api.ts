@@ -1,16 +1,25 @@
 import type { AnalysisResult, ParseResult, Project } from "./types";
+import { getToken } from "./auth";
 
 const BASE_URL = "/api";
 
 // ── Generic helpers ───────────────────────────────────────────────────────────────────
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     ...options,
     headers: {
       "ngrok-skip-browser-warning": "true",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
   });
+  if (res.status === 401) {
+    // Token expired or invalid — clear session and redirect to login
+    import("./auth").then(({ clearSession }) => clearSession());
+    window.location.href = "/login";
+    throw new Error("Session expired");
+  }
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(error.detail || `API Error: ${res.status}`);
@@ -19,8 +28,12 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
 }
 
 async function downloadFile(path: string, filename: string) {
+  const token = getToken();
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: {
+      "ngrok-skip-browser-warning": "true",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
   if (!res.ok) throw new Error(await res.text());
   const blob = await res.blob();
@@ -32,7 +45,7 @@ async function downloadFile(path: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** Generic job poller — works for /rfp/parse-status, /projects/parse-status, /analysis/status */
+/** Generic job poller */
 async function pollJob<T>(
   statusEndpoint: string,
   maxWaitMs = 10 * 60 * 1000,

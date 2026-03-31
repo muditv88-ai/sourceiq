@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -9,8 +9,18 @@ import {
   FileSpreadsheet,
   DollarSign,
   FolderOpen,
+  LogOut,
+  UserCircle2,
 } from "lucide-react";
 import ChatWidget from "@/components/ChatWidget";
+import { useAuth } from "@/contexts/AuthContext";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const navItems = [
   { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
@@ -24,6 +34,13 @@ const navItems = [
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
+
+  function handleLogout() {
+    logout();
+    navigate("/login", { replace: true });
+  }
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -56,6 +73,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </NavLink>
           ))}
         </nav>
+
+        {/* User menu */}
+        <div className="p-3 mx-3 mb-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground transition-colors">
+                <UserCircle2 className="h-5 w-5 shrink-0" />
+                <span className="truncate">{user?.username}</span>
+                <span className="ml-auto text-xs text-sidebar-foreground/40 capitalize">{user?.role}</span>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="w-52">
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                Signed in as <span className="font-medium text-foreground">{user?.username}</span>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+                <LogOut className="mr-2 h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
 
         <div className="p-4 mx-3 mb-4 rounded-lg bg-sidebar-accent/50 text-xs text-sidebar-foreground/60">
           <p className="font-medium text-sidebar-foreground/80 mb-1">API Status</p>

@@ -2,7 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AuthProvider } from "@/contexts/AuthContext";
+import AuthGuard from "@/components/AuthGuard";
 import AppLayout from "@/components/AppLayout";
+import LoginPage from "@/pages/LoginPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ProjectsPage from "@/pages/ProjectsPage";
 import NewRfpPage from "@/pages/NewRfpPage";
@@ -19,18 +22,30 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <BrowserRouter>
-        <AppLayout>
+        <AuthProvider>
           <Routes>
-            <Route path="/"              element={<DashboardPage />} />
-            <Route path="/projects"      element={<ProjectsPage />} />
-            <Route path="/rfp/new"       element={<NewRfpPage />} />
-            <Route path="/analysis"      element={<AnalysisPage />} />
-            <Route path="/scenarios"     element={<ScenariosPage />} />
-            <Route path="/communications" element={<CommunicationsPage />} />
-            <Route path="/pricing"       element={<PricingPage />} />
-            <Route path="*"              element={<NotFound />} />
+            {/* Public */}
+            <Route path="/login" element={<LoginPage />} />
+
+            {/* Protected — all wrapped in AuthGuard + AppLayout */}
+            <Route path="/*" element={
+              <AuthGuard>
+                <AppLayout>
+                  <Routes>
+                    <Route path="/"               element={<DashboardPage />} />
+                    <Route path="/projects"        element={<ProjectsPage />} />
+                    <Route path="/rfp/new"         element={<NewRfpPage />} />
+                    <Route path="/analysis"        element={<AnalysisPage />} />
+                    <Route path="/scenarios"       element={<ScenariosPage />} />
+                    <Route path="/communications"  element={<CommunicationsPage />} />
+                    <Route path="/pricing"         element={<PricingPage />} />
+                    <Route path="*"                element={<NotFound />} />
+                  </Routes>
+                </AppLayout>
+              </AuthGuard>
+            } />
           </Routes>
-        </AppLayout>
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
