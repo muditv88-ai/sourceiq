@@ -10,27 +10,33 @@ import { analysisStore } from "@/lib/analysisStore";
 import type { Project, ProjectMeta, ModuleStates, ModuleStateValue } from "@/lib/types";
 import {
   FolderOpen, Plus, Trash2, Upload, Play, RotateCcw,
-  CheckCircle2, Clock, FileText, Users, Loader2,
+  CheckCircle2, FileText, Users, Loader2,
   X, AlertCircle, Settings2, ChevronDown, ChevronUp,
 } from "lucide-react";
 
+// ── Config maps ────────────────────────────────────────────────────────────────
+const STATUS_FALLBACK = { label: "Unknown", color: "bg-muted text-muted-foreground" };
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  created:            { label: "Created",            color: "bg-muted text-muted-foreground" },
-  rfp_uploaded:       { label: "RFP Uploaded",       color: "bg-blue-100 text-blue-700" },
-  suppliers_uploaded: { label: "Suppliers Added",    color: "bg-yellow-100 text-yellow-700" },
-  parsed:             { label: "Parsed",             color: "bg-purple-100 text-purple-700" },
-  analyzed:           { label: "Analyzed",           color: "bg-green-100 text-green-700" },
+  created:            { label: "Created",         color: "bg-muted text-muted-foreground" },
+  rfp_uploaded:       { label: "RFP Uploaded",    color: "bg-blue-100 text-blue-700" },
+  suppliers_uploaded: { label: "Suppliers Added", color: "bg-yellow-100 text-yellow-700" },
+  parsed:             { label: "Parsed",          color: "bg-purple-100 text-purple-700" },
+  analyzed:           { label: "Analyzed",        color: "bg-green-100 text-green-700" },
 };
+const getStatus = (s: string) => STATUS_CONFIG[s] ?? STATUS_FALLBACK;
 
-const MODULE_STATE_CONFIG: Record<ModuleStateValue, { label: string; color: string; dot: string }> = {
-  pending:  { label: "Pending",  color: "bg-muted text-muted-foreground",      dot: "bg-muted-foreground" },
-  active:   { label: "Active",   color: "bg-blue-100 text-blue-700",           dot: "bg-blue-500 animate-pulse" },
-  complete: { label: "Complete", color: "bg-green-100 text-green-700",         dot: "bg-green-500" },
-  error:    { label: "Error",    color: "bg-red-100 text-red-700",             dot: "bg-red-500" },
+const MODULE_FALLBACK = { label: "Unknown", color: "bg-muted text-muted-foreground", dot: "bg-muted-foreground" };
+const MODULE_STATE_CONFIG: Record<string, { label: string; color: string; dot: string }> = {
+  pending:  { label: "Pending",  color: "bg-muted text-muted-foreground",  dot: "bg-muted-foreground" },
+  active:   { label: "Active",   color: "bg-blue-100 text-blue-700",       dot: "bg-blue-500 animate-pulse" },
+  complete: { label: "Complete", color: "bg-green-100 text-green-700",     dot: "bg-green-500" },
+  error:    { label: "Error",    color: "bg-red-100 text-red-700",         dot: "bg-red-500" },
 };
+const getModuleState = (s: string | undefined | null) =>
+  (s ? MODULE_STATE_CONFIG[s] : undefined) ?? MODULE_FALLBACK;
 
-function ModuleStatePill({ label, state }: { label: string; state: ModuleStateValue }) {
-  const cfg = MODULE_STATE_CONFIG[state];
+function ModuleStatePill({ label, state }: { label: string; state: ModuleStateValue | string | undefined | null }) {
+  const cfg = getModuleState(state as string);
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${cfg.color}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
@@ -77,11 +83,10 @@ export default function ProjectsPage() {
     const p = await api.getProject(id);
     setSelected(p);
     setProjects(prev => prev.map(x => x.project_id === id ? p : x));
-    // also refresh module states
     try {
       const ms = await api.getModuleStates(id);
       setModuleStates(ms);
-    } catch { /* ignore if backend not yet updated */ }
+    } catch { /* ignore if endpoint not yet available */ }
   };
 
   const saveMeta = async () => {
@@ -98,7 +103,6 @@ export default function ProjectsPage() {
     }
   };
 
-  // ── Create project
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setBusy(true);
@@ -115,7 +119,6 @@ export default function ProjectsPage() {
     }
   };
 
-  // ── Delete project
   const handleDelete = async (projectId: string) => {
     if (!confirm("Delete this project and all its files?")) return;
     await api.deleteProject(projectId);
@@ -123,7 +126,6 @@ export default function ProjectsPage() {
     if (selected?.project_id === projectId) { setSelected(null); setView("list"); }
   };
 
-  // ── Open project detail
   const openProject = (p: Project) => {
     setSelected(p);
     setView("detail");
@@ -132,11 +134,9 @@ export default function ProjectsPage() {
     setShowMeta(false);
     setMeta(p.meta ?? {});
     setModuleStates(null);
-    // load module states
     api.getModuleStates(p.project_id).then(setModuleStates).catch(() => {});
   };
 
-  // ── Upload RFP
   const handleRfpUpload = async (files: File[]) => {
     if (!selected || !files[0]) return;
     setBusy(true); setActionMsg("Uploading RFP..."); setActionError(null);
@@ -151,7 +151,6 @@ export default function ProjectsPage() {
     }
   };
 
-  // ── Upload suppliers
   const handleSupplierUpload = async (files: File[]) => {
     if (!selected || !files.length) return;
     setBusy(true); setActionError(null);
@@ -168,14 +167,12 @@ export default function ProjectsPage() {
     setBusy(false);
   };
 
-  // ── Remove supplier
   const handleRemoveSupplier = async (filename: string) => {
     if (!selected) return;
     await api.removeProjectSupplier(selected.project_id, filename);
     await refreshSelected(selected.project_id);
   };
 
-  // ── Parse
   const handleParse = async () => {
     if (!selected) return;
     setBusy(true); setActionMsg("Parsing RFP with AI..."); setActionError(null);
@@ -190,7 +187,6 @@ export default function ProjectsPage() {
     }
   };
 
-  // ── Analyze
   const handleAnalyze = async () => {
     if (!selected) return;
     setBusy(true); setActionMsg("Running analysis..."); setActionError(null);
@@ -206,10 +202,9 @@ export default function ProjectsPage() {
     }
   };
 
-  // ────────────────────────── RENDER ──────────────────────────
-
+  // ── Detail view ────────────────────────────────────────────────────────────
   if (view === "detail" && selected) {
-    const sc       = STATUS_CONFIG[selected.status] ?? STATUS_CONFIG.created;
+    const sc         = getStatus(selected.status);
     const canParse   = !!selected.rfp_filename;
     const canAnalyze = !!selected.rfp_filename && (selected.supplier_count ?? 0) > 0;
     const suppliers  = selected.suppliers ?? [];
@@ -233,11 +228,11 @@ export default function ProjectsPage() {
           <div className="flex flex-wrap gap-2">
             <ModuleStatePill label="RFP"                state={moduleStates.rfp_state} />
             <ModuleStatePill label="Technical Analysis" state={moduleStates.technical_state} />
-            <ModuleStatePill label="Pricing Analysis"  state={moduleStates.pricing_state} />
+            <ModuleStatePill label="Pricing Analysis"   state={moduleStates.pricing_state} />
           </div>
         )}
 
-        {/* Action feedback */}
+        {/* Feedback banners */}
         {actionMsg && !actionError && (
           <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-4 py-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />{actionMsg}
@@ -249,21 +244,16 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        {/* Project Meta (collapsible) */}
+        {/* Project Details (collapsible) */}
         <Card>
-          <CardHeader
-            className="cursor-pointer select-none"
-            onClick={() => setShowMeta(v => !v)}
-          >
+          <CardHeader className="cursor-pointer select-none" onClick={() => setShowMeta(v => !v)}>
             <CardTitle className="text-base flex items-center justify-between gap-2">
-              <span className="flex items-center gap-2">
-                <Settings2 className="h-4 w-4" /> Project Details
-              </span>
+              <span className="flex items-center gap-2"><Settings2 className="h-4 w-4" /> Project Details</span>
               {showMeta ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </CardTitle>
             {!showMeta && (
               <CardDescription>
-                {selected.meta?.category ? `${selected.meta.category}` : "Category, description, stakeholders, budget…"}
+                {selected.meta?.category ?? "Category, description, stakeholders, budget…"}
               </CardDescription>
             )}
           </CardHeader>
@@ -272,60 +262,41 @@ export default function ProjectsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Category</label>
-                  <input
-                    value={meta.category ?? ""}
-                    onChange={e => setMeta(m => ({ ...m, category: e.target.value }))}
+                  <input value={meta.category ?? ""} onChange={e => setMeta(m => ({ ...m, category: e.target.value }))}
                     placeholder="e.g. IT Infrastructure"
-                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Timeline</label>
-                  <input
-                    value={meta.timeline ?? ""}
-                    onChange={e => setMeta(m => ({ ...m, timeline: e.target.value }))}
+                  <input value={meta.timeline ?? ""} onChange={e => setMeta(m => ({ ...m, timeline: e.target.value }))}
                     placeholder="e.g. Q3 2026"
-                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
                 </div>
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Description</label>
-                <textarea
-                  value={meta.description ?? ""}
-                  onChange={e => setMeta(m => ({ ...m, description: e.target.value }))}
-                  placeholder="Brief description of this RFP project"
-                  rows={2}
-                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-                />
+                <textarea value={meta.description ?? ""} onChange={e => setMeta(m => ({ ...m, description: e.target.value }))}
+                  placeholder="Brief description of this RFP project" rows={2}
+                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none" />
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Stakeholders</label>
-                <input
-                  value={meta.stakeholders ?? ""}
-                  onChange={e => setMeta(m => ({ ...m, stakeholders: e.target.value }))}
+                <input value={meta.stakeholders ?? ""} onChange={e => setMeta(m => ({ ...m, stakeholders: e.target.value }))}
                   placeholder="e.g. Procurement, Finance, IT"
-                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                />
+                  className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Budget</label>
-                  <input
-                    type="number"
-                    value={meta.budget ?? ""}
+                  <input type="number" value={meta.budget ?? ""}
                     onChange={e => setMeta(m => ({ ...m, budget: e.target.value ? Number(e.target.value) : null }))}
                     placeholder="0"
-                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Currency</label>
-                  <select
-                    value={meta.currency ?? "USD"}
-                    onChange={e => setMeta(m => ({ ...m, currency: e.target.value }))}
-                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
+                  <select value={meta.currency ?? "USD"} onChange={e => setMeta(m => ({ ...m, currency: e.target.value }))}
+                    className="w-full text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring">
                     {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
@@ -341,13 +312,9 @@ export default function ProjectsPage() {
         {/* RFP Upload */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <FileText className="h-4 w-4" /> RFP Document
-            </CardTitle>
+            <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" /> RFP Document</CardTitle>
             <CardDescription>
-              {selected.rfp_filename
-                ? `Current file: ${selected.rfp_filename} — re-upload to replace`
-                : "Upload the RFP template file once"}
+              {selected.rfp_filename ? `Current file: ${selected.rfp_filename} — re-upload to replace` : "Upload the RFP template file once"}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -355,20 +322,11 @@ export default function ProjectsPage() {
               <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 text-sm">
                 <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
                 <span className="font-medium flex-1 truncate">{selected.rfp_filename}</span>
-                <FileUploadZone
-                  onFileSelect={handleRfpUpload}
-                  accept=".xlsx,.xls,.csv,.pdf,.docx"
-                  label="Replace"
-                  compact
-                />
+                <FileUploadZone onFileSelect={handleRfpUpload} accept=".xlsx,.xls,.csv,.pdf,.docx" label="Replace" compact />
               </div>
             ) : (
-              <FileUploadZone
-                onFileSelect={handleRfpUpload}
-                accept=".xlsx,.xls,.csv,.pdf,.docx"
-                label="Upload RFP Template"
-                description="Drag & drop or click — xlsx, xls, csv, pdf, docx"
-              />
+              <FileUploadZone onFileSelect={handleRfpUpload} accept=".xlsx,.xls,.csv,.pdf,.docx"
+                label="Upload RFP Template" description="Drag & drop or click — xlsx, xls, csv, pdf, docx" />
             )}
           </CardContent>
         </Card>
@@ -376,19 +334,12 @@ export default function ProjectsPage() {
         {/* Supplier Files */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Users className="h-4 w-4" /> Supplier Responses
-            </CardTitle>
+            <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Supplier Responses</CardTitle>
             <CardDescription>Upload once, re-run analysis any number of times</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <FileUploadZone
-              onFileSelect={handleSupplierUpload}
-              multiple
-              accept=".xlsx,.xls,.csv,.pdf,.docx"
-              label="Add Supplier Files"
-              description="Drop one file per supplier"
-            />
+            <FileUploadZone onFileSelect={handleSupplierUpload} multiple accept=".xlsx,.xls,.csv,.pdf,.docx"
+              label="Add Supplier Files" description="Drop one file per supplier" />
             {suppliers.length > 0 && (
               <div className="space-y-1.5">
                 {suppliers.map((s) => {
@@ -398,10 +349,8 @@ export default function ProjectsPage() {
                       <Upload className="h-3.5 w-3.5 text-muted-foreground" />
                       <span className="flex-1 font-medium truncate">{s.name}</span>
                       <span className="text-xs text-muted-foreground truncate max-w-[160px]">{fname}</span>
-                      <button
-                        onClick={() => handleRemoveSupplier(fname)}
-                        className="text-muted-foreground hover:text-destructive transition-colors"
-                      >
+                      <button onClick={() => handleRemoveSupplier(fname)}
+                        className="text-muted-foreground hover:text-destructive transition-colors">
                         <X className="h-3.5 w-3.5" />
                       </button>
                     </div>
@@ -419,28 +368,15 @@ export default function ProjectsPage() {
             <CardDescription>Files are stored — no re-upload needed for subsequent runs</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col sm:flex-row gap-3">
-            <Button
-              variant="outline"
-              onClick={handleParse}
-              disabled={!canParse || busy}
-              className="gap-2 flex-1"
-            >
-              {busy && actionMsg?.includes("Parsing") ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Parsing...</>
-              ) : (
-                <><RotateCcw className="h-4 w-4" /> Parse RFP</>
-              )}
+            <Button variant="outline" onClick={handleParse} disabled={!canParse || busy} className="gap-2 flex-1">
+              {busy && actionMsg?.includes("Parsing")
+                ? <><Loader2 className="h-4 w-4 animate-spin" /> Parsing...</>
+                : <><RotateCcw className="h-4 w-4" /> Parse RFP</>}
             </Button>
-            <Button
-              onClick={handleAnalyze}
-              disabled={!canAnalyze || busy}
-              className="gap-2 flex-1"
-            >
-              {busy && actionMsg?.includes("analysis") ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Analysing...</>
-              ) : (
-                <><Play className="h-4 w-4" /> Run Analysis ({selected.supplier_count} supplier{selected.supplier_count !== 1 ? "s" : ""})</>
-              )}
+            <Button onClick={handleAnalyze} disabled={!canAnalyze || busy} className="gap-2 flex-1">
+              {busy && actionMsg?.includes("analysis")
+                ? <><Loader2 className="h-4 w-4 animate-spin" /> Analysing...</>
+                : <><Play className="h-4 w-4" /> Run Analysis ({selected.supplier_count} supplier{selected.supplier_count !== 1 ? "s" : ""})</>}
             </Button>
           </CardContent>
         </Card>
@@ -448,7 +384,7 @@ export default function ProjectsPage() {
     );
   }
 
-  // ── Project list view
+  // ── List view ──────────────────────────────────────────────────────────────
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -461,21 +397,15 @@ export default function ProjectsPage() {
         </Button>
       </div>
 
-      {/* New project form */}
       {creating && (
         <Card className="border-primary/40">
           <CardContent className="p-4 flex gap-3 items-center">
-            <input
-              ref={nameRef}
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
+            <input ref={nameRef} value={newName} onChange={e => setNewName(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleCreate()}
               placeholder="Project name (e.g. Q3 2026 IT Infrastructure RFP)"
-              className="flex-1 text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-            />
+              className="flex-1 text-sm border border-input rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
             <Button onClick={handleCreate} disabled={!newName.trim() || busy} className="gap-1.5">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              Create
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create
             </Button>
             <Button variant="ghost" onClick={() => { setCreating(false); setNewName(""); }}>
               <X className="h-4 w-4" />
@@ -484,7 +414,6 @@ export default function ProjectsPage() {
         </Card>
       )}
 
-      {/* Projects list */}
       {loading ? (
         <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
           <Loader2 className="h-5 w-5 animate-spin" /> Loading projects...
@@ -505,13 +434,11 @@ export default function ProjectsPage() {
       ) : (
         <div className="space-y-3">
           {projects.map((p) => {
-            const sc = STATUS_CONFIG[p.status] ?? STATUS_CONFIG.created;
+            const sc = getStatus(p.status);
             return (
-              <div
-                key={p.project_id}
+              <div key={p.project_id}
                 className="flex items-center gap-4 p-4 rounded-lg border hover:bg-muted/30 transition-colors cursor-pointer group"
-                onClick={() => openProject(p)}
-              >
+                onClick={() => openProject(p)}>
                 <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
                   <FolderOpen className="h-5 w-5 text-primary" />
                 </div>
@@ -519,15 +446,13 @@ export default function ProjectsPage() {
                   <p className="font-medium truncate">{p.name}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {p.meta?.category ? <span className="font-medium text-foreground/70">{p.meta.category} · </span> : null}
-                    {p.rfp_filename ? p.rfp_filename : "No RFP yet"}
+                    {p.rfp_filename ?? "No RFP yet"}
                     {p.supplier_count ? ` · ${p.supplier_count} supplier${p.supplier_count !== 1 ? "s" : ""}` : ""}
                   </p>
                 </div>
                 <span className={`text-xs px-2.5 py-1 rounded-full font-medium shrink-0 ${sc.color}`}>{sc.label}</span>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(p.project_id); }}
-                  className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-all"
-                >
+                <button onClick={(e) => { e.stopPropagation(); handleDelete(p.project_id); }}
+                  className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-all">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
