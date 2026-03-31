@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://humble-carnival-4jxvgp69wg592jqgq-8000.app.github.dev/:path*"
+      "destination": "https://nonecliptical-catabolically-stephenie.ngrok-free.dev/:path*"
     },
     {
       "source": "/((?!api).*)",
