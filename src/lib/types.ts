@@ -27,7 +27,7 @@ export interface ModuleStates {
 export interface ProjectMeta {
   category?:     string;
   description?:  string;
-  stakeholders?: string;
+  stakeholders?: string[];   // fix: was string, backend expects List[str]
   timeline?:     string;
   budget?:       number | null;
   currency?:     string;
