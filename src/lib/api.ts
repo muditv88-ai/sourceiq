@@ -285,6 +285,16 @@ export const api = {
 
   getSupplier: (id: string) => request<any>(`/suppliers/${id}`),
 
+  updateSupplier: (id: string, data: { name?: string; email?: string; category?: string; status?: string }) =>
+    request<{ supplier_id: string; updated: Record<string, unknown> }>(`/suppliers/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+
+  deleteSupplier: (id: string) =>
+    request<{ deleted: boolean }>(`/suppliers/${id}`, { method: "DELETE" }),
+
   inviteSupplier: (id: string) =>
     request<{ sent: boolean }>(`/suppliers/${id}/invite`, { method: "POST" }),
 
