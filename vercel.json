@@ -3,10 +3,6 @@
     {
       "source": "/api/:path*",
       "destination": "https://muditv88-ai-sourceiq-backend.hf.space/:path*"
-    },
-    {
-      "source": "/((?!api).*)",
-      "destination": "/index.html"
     }
   ]
 }
