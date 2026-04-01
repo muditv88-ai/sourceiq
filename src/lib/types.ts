@@ -1,4 +1,4 @@
-// ── Shared ────────────────────────────────────────────────────────────────────
+// ── Shared ────────────────────────────────────────────────────────────────────────────
 export interface RFPQuestion {
   question_id:      string;
   category:         string;
@@ -8,7 +8,7 @@ export interface RFPQuestion {
   scoring_guidance?: string;
 }
 
-// ── Project ───────────────────────────────────────────────────────────────────
+// ── Project ──────────────────────────────────────────────────────────────────────────
 export type ProjectStatus =
   | "created"
   | "rfp_uploaded"
@@ -93,7 +93,7 @@ export interface Project {
   meta?:          ProjectMeta;
 }
 
-// ── Analysis ──────────────────────────────────────────────────────────────────
+// ── Analysis ──────────────────────────────────────────────────────────────────────────
 export interface QuestionScore {
   question_id:     string;
   question_text:   string;
@@ -135,6 +135,13 @@ export interface RecommendationDetail {
   critical_wins:  string[];
 }
 
+/** Simple price row embedded in the technical analysis result */
+export interface PriceComparisonRow {
+  line_item:  string;
+  suppliers:  Record<string, string>;
+  unit?:      string;
+}
+
 export interface AnalysisResult {
   rfp_id:                 string;
   status:                 string;
@@ -143,9 +150,11 @@ export interface AnalysisResult {
   analysis_summary:       string;
   recommendation_detail?: RecommendationDetail;
   available_exports?:     string[];
+  /** Lightweight price table surfaced by the technical analysis run */
+  price_comparison?:      PriceComparisonRow[];
 }
 
-// ── Parse ──────────────────────────────────────────────────────────────────────
+// ── Parse ─────────────────────────────────────────────────────────────────────────────
 export interface ParseResult {
   rfp_id?:         string;
   project_id?:     string;
@@ -155,7 +164,7 @@ export interface ParseResult {
   total_questions: number;
 }
 
-// ── Dashboard / legacy ──────────────────────────────────────────────────────────
+// ── Dashboard / legacy ───────────────────────────────────────────────────────────────
 export interface RfpSummary {
   id:             string;
   filename:       string;
@@ -164,7 +173,7 @@ export interface RfpSummary {
   supplier_count?: number;
 }
 
-// ── Pricing ───────────────────────────────────────────────────────────────────
+// ── Pricing ────────────────────────────────────────────────────────────────────────────
 export interface PricingLineItem {
   description: string;
   quantity:    number;
@@ -197,13 +206,14 @@ export interface TotalCostResult {
 }
 
 export interface BestOfBestBreakdown {
-  description:    string;
-  best_supplier:  string;
-  best_total:     number;
+  description:     string;
+  best_supplier:   string;
+  best_total:      number;
   best_unit_price: number;
-  quantity:       number;
-  category:       string;
-  all_prices:     Record<string, number | null>;
+  savings_vs_worst: number;
+  quantity:        number;
+  category:        string;
+  all_prices:      Record<string, number | null>;
 }
 
 export interface BestOfBest {
@@ -255,13 +265,13 @@ export interface AwardRecommendation {
 }
 
 export interface PricingResult {
-  rfp_id:              string;
-  suppliers:           string[];
-  cost_model:          PricingMatrix;
-  total_costs:         TotalCostResult[];
-  best_of_best:        BestOfBest;
-  overall_best:        OverallBest;
-  market_basket_2:     MarketBasket;
-  market_basket_3:     MarketBasket;
+  rfp_id:               string;
+  suppliers:            string[];
+  cost_model:           PricingMatrix;
+  total_costs:          TotalCostResult[];
+  best_of_best:         BestOfBest;
+  overall_best:         OverallBest;
+  market_basket_2:      MarketBasket;
+  market_basket_3:      MarketBasket;
   award_recommendation: AwardRecommendation;
 }

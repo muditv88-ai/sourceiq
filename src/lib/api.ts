@@ -1,9 +1,9 @@
-import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, RFPStructuredView } from "./types";
+import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, PricingResult, RFPStructuredView } from "./types";
 import { getToken } from "./auth";
 
 const BASE_URL = "/api";
 
-// ── Generic helpers ───────────────────────────────────────────────────────────────────
+// ── Generic helpers ────────────────────────────────────────────────────────────────────────────
 async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const token = getToken();
   const res = await fetch(`${BASE_URL}${endpoint}`, {
@@ -96,10 +96,10 @@ function normProject(raw: any): Project {
   } as Project;
 }
 
-// ── API surface ────────────────────────────────────────────────────────────────────
+// ── API surface ───────────────────────────────────────────────────────────────────────────────
 export const api = {
 
-  // ── Projects ──────────────────────────────────────────────────────────────────
+  // ── Projects ──────────────────────────────────────────────────────────────────────────
   listProjects: async () => {
     const res = await request<{ projects: any[] }>("/projects");
     return { projects: (res.projects || []).map(normProject) };
@@ -187,7 +187,7 @@ export const api = {
     return pollJob<AnalysisResult>(`/technical-analysis/status/${job_id}`, 15 * 60 * 1000);
   },
 
-  // ── RFP ──────────────────────────────────────────────────────────────────────
+  // ── RFP ──────────────────────────────────────────────────────────────────────────────
   uploadRfp: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -217,7 +217,7 @@ export const api = {
   getRfpStructuredView: (projectId: string) =>
     request<RFPStructuredView>(`/rfp/${projectId}/structured-view`),
 
-  // ── Technical Analysis ────────────────────────────────────────────────────────
+  // ── Technical Analysis ────────────────────────────────────────────────────────────────
   runAnalysis: async (rfp_id: string): Promise<AnalysisResult> => {
     const { job_id } = await request<{ job_id: string; status: string }>("/technical-analysis/run", {
       method: "POST",
@@ -231,7 +231,7 @@ export const api = {
     return downloadFile(`/technical-analysis/export/${rfpId}?format=${format}`, `analysis_${rfpId}.${format}`);
   },
 
-  // ── Chat ────────────────────────────────────────────────────────────────────────
+  // ── Chat ──────────────────────────────────────────────────────────────────────────────
   chat: (
     messages: Array<{ role: string; content: string }>,
     rfp_id?: string,
@@ -248,7 +248,7 @@ export const api = {
   getChatAuditLog: (projectId: string) =>
     request<{ entries: AuditLogEntry[] }>(`/chat/audit/${projectId}`),
 
-  // ── Scenarios ──────────────────────────────────────────────────────────────────
+  // ── Scenarios ────────────────────────────────────────────────────────────────────────────
   runScenario: (params: {
     rfp_id: string;
     weights: Record<string, number>;
@@ -268,7 +268,7 @@ export const api = {
       body: JSON.stringify(params),
     }),
 
-  // ── Communications ─────────────────────────────────────────────────────────────
+  // ── Communications ─────────────────────────────────────────────────────────────────────────
   draftEmail: (params: {
     rfp_id: string;
     supplier_name: string;
@@ -283,12 +283,30 @@ export const api = {
       }
     ),
 
-  // ── Pricing Analysis ────────────────────────────────────────────────────────────
-  analyzePricing: (rfpId: string) =>
+  // ── Pricing Analysis ──────────────────────────────────────────────────────────────────────
+  /**
+   * Start a pricing analysis job and poll until it completes.
+   * Accepts an optional projectId so the backend can locate files
+   * via the project store (fixes the "No supplier files found" error).
+   */
+  runPricingAnalysis: async (rfpId: string, projectId?: string): Promise<PricingResult> => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      "/pricing-analysis/analyze",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rfp_id: rfpId, project_id: projectId ?? null }),
+      }
+    );
+    return pollJob<PricingResult>(`/pricing-analysis/status/${job_id}`, 10 * 60 * 1000);
+  },
+
+  // Low-level helpers kept for backwards compat / manual use
+  analyzePricing: (rfpId: string, projectId?: string) =>
     request<{ job_id: string; status: string }>("/pricing-analysis/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rfp_id: rfpId }),
+      body: JSON.stringify({ rfp_id: rfpId, project_id: projectId ?? null }),
     }),
 
   getPricingStatus: (jobId: string) =>
