@@ -58,19 +58,35 @@ async function pollJob<T>(
 ): Promise<T> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    const job = await request<{
-      job_id: string;
-      status: string;
-      result?: T;
-      error?: string;
-    }>(statusEndpoint);
+    let job: { job_id: string; status: string; result?: T; error?: string };
+
+    try {
+      job = await request<{
+        job_id: string;
+        status: string;
+        result?: T;
+        error?: string;
+      }>(statusEndpoint);
+    } catch (e: any) {
+      // 404 = backend restarted and wiped the in-memory job store
+      if (e.message?.includes("404") || e.message?.toLowerCase().includes("not found")) {
+        throw new Error(
+          "Job not found — the server may have restarted. Please click Run Pricing Analysis again."
+        );
+      }
+      throw e;
+    }
 
     if (job.status === "completed" && job.result) return job.result;
-    if (job.status === "failed") throw new Error(job.error || "Job failed");
+    if (job.status === "failed") {
+      throw new Error(
+        job.error || "Pricing analysis failed. Check that supplier files have been uploaded."
+      );
+    }
 
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error("Timed out waiting for job to complete");
+  throw new Error("Timed out waiting for pricing analysis to complete. Please try again.");
 }
 
 /**
