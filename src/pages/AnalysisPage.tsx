@@ -3,35 +3,132 @@ import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { analysisStore } from "@/lib/analysisStore";
+import { api } from "@/lib/api";
 import type { AnalysisResult, SupplierResult, CategoryScore } from "@/lib/types";
 import {
   Trophy, TrendingUp, TrendingDown, ArrowUpDown,
   ChevronDown, ChevronUp, PlusCircle, Info,
+  Loader2, FlaskConical, FolderOpen,
 } from "lucide-react";
 
 export default function AnalysisPage() {
   const navigate = useNavigate();
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [result, setResult] = useState<AnalysisResult | null>(() => analysisStore.getResult());
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<"rank" | "score">("rank");
 
-  useEffect(() => {
-    const stored = analysisStore.getResult();
-    if (stored) setResult(stored);
-  }, []);
+  // Project-picker state — used when no in-memory result exists
+  const [projects, setProjects]     = useState<Array<{ id: string; name: string }>>([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [selectedProject, setSelectedProject] = useState("");
+  const [running, setRunning]       = useState(false);
+  const [runError, setRunError]     = useState("");
 
+  // Load projects only when we need the picker
+  useEffect(() => {
+    if (!result) {
+      setLoadingProjects(true);
+      api.listProjects()
+        .then(res => setProjects((res.projects ?? []).map((p: any) => ({ id: p.id, name: p.name }))))
+        .catch(() => setProjects([]))
+        .finally(() => setLoadingProjects(false));
+    }
+  }, [result]);
+
+  async function handleRunAnalysis() {
+    if (!selectedProject) return;
+    setRunning(true);
+    setRunError("");
+    try {
+      const res = await api.analyzeProject(selectedProject);
+      analysisStore.setResult(res);
+      setResult(res);
+    } catch (err: any) {
+      setRunError(err?.message ?? "Analysis failed. Please try again.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  // ── Empty state — project picker ─────────────────────────────────
   if (!result) {
     return (
-      <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
-        <p className="text-muted-foreground text-lg">No analysis results yet.</p>
-        <Button onClick={() => navigate("/rfp/new")} className="gap-2">
-          <PlusCircle className="h-4 w-4" /> Start New Evaluation
-        </Button>
+      <div className="max-w-xl mx-auto mt-16 space-y-6">
+        <div className="text-center space-y-1">
+          <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-primary/10 flex items-center justify-center">
+            <FlaskConical className="h-7 w-7 text-primary" />
+          </div>
+          <h1 className="text-xl font-bold">Technical &amp; Pricing Analysis</h1>
+          <p className="text-sm text-muted-foreground">
+            Select a project to run analysis on its uploaded supplier responses.
+          </p>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FolderOpen className="h-4 w-4" /> Select Project
+            </CardTitle>
+            <CardDescription>
+              The analysis will use the RFP and all supplier files already uploaded to this project.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {loadingProjects ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading projects…
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="text-sm text-muted-foreground py-4 text-center">
+                No projects found.
+                <Button variant="link" className="px-1" onClick={() => navigate("/projects")}>
+                  Create one first.
+                </Button>
+              </div>
+            ) : (
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                value={selectedProject}
+                onChange={e => { setSelectedProject(e.target.value); setRunError(""); }}
+              >
+                <option value="" disabled>— Choose a project —</option>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            )}
+
+            {runError && (
+              <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2">
+                {runError}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                className="flex-1 gap-2"
+                disabled={!selectedProject || running || loadingProjects}
+                onClick={handleRunAnalysis}
+              >
+                {running
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Running analysis…</>
+                  : <><FlaskConical className="h-4 w-4" /> Run Analysis</>}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => navigate("/supplier-responses")}
+              >
+                Upload Responses
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
+  // ── Results view ─────────────────────────────────────────────────
   const suppliers = [...(result.suppliers ?? [])].sort((a, b) =>
     sortBy === "rank" ? a.rank - b.rank : b.overall_score - a.overall_score
   );
@@ -40,8 +137,8 @@ export default function AnalysisPage() {
     return (
       <div className="max-w-2xl mx-auto mt-20 text-center space-y-4">
         <p className="text-muted-foreground text-lg">Analysis completed but no suppliers were found.</p>
-        <Button onClick={() => navigate("/rfp/new")} className="gap-2">
-          <PlusCircle className="h-4 w-4" /> Try Again
+        <Button onClick={() => { analysisStore.clear?.(); setResult(null); }} className="gap-2">
+          <PlusCircle className="h-4 w-4" /> Try Another Project
         </Button>
       </div>
     );
@@ -70,7 +167,7 @@ export default function AnalysisPage() {
             <ArrowUpDown className="h-4 w-4" />
             Sort by {sortBy === "rank" ? "Score" : "Rank"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => navigate("/rfp/new")}>
+          <Button size="sm" variant="outline" onClick={() => { analysisStore.clear?.(); setResult(null); }}>
             <PlusCircle className="h-4 w-4 mr-2" /> New
           </Button>
         </div>

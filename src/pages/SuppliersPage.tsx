@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
@@ -18,7 +19,7 @@ import { toast } from "@/hooks/use-toast";
 import {
   Users, UserPlus, Upload, CheckCircle2, Clock, AlertCircle,
   Loader2, Mail, FileText, ChevronDown, ChevronUp,
-  Pencil, Trash2,
+  Pencil, Trash2, ArrowRight, FlaskConical,
 } from "lucide-react";
 
 type OnboardStatus = "pending" | "invited" | "docs_received" | "validated" | "active";
@@ -42,7 +43,22 @@ const STATUS_CONFIG: Record<OnboardStatus, { label: string; color: string; icon:
   active:        { label: "Active",        color: "bg-green-100 text-green-700",         icon: CheckCircle2 },
 };
 
+/** Normalise raw backend shape → Supplier */
+function normSupplier(raw: any): Supplier {
+  return {
+    id:           String(raw.supplier_id ?? raw.id ?? ""),
+    name:         raw.name ?? raw.supplier_name ?? String(raw.supplier_id ?? raw.id ?? ""),
+    email:        raw.email ?? "",
+    category:     raw.category ?? "",
+    status:       (raw.status ?? "pending") as OnboardStatus,
+    completeness: raw.completeness_pct ?? raw.completeness,
+    missing_docs: raw.missing_docs ?? raw.missing ?? [],
+    created_at:   raw.created_at,
+  };
+}
+
 export default function SuppliersPage() {
+  const navigate = useNavigate();
   const [suppliers, setSuppliers]     = useState<Supplier[]>([]);
   const [loading, setLoading]         = useState(true);
   const [expanded, setExpanded]       = useState<string | null>(null);
@@ -51,9 +67,10 @@ export default function SuppliersPage() {
   const [inviteForm, setInviteForm]   = useState({ name: "", email: "", category: "" });
   const [inviting, setInviting]       = useState(false);
 
-  // Validate
+  // Validate — tracked per-supplier so only that card shows a spinner
   const [validating, setValidating]   = useState<string | null>(null);
-  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  // uploadFiles keyed by supplier id
+  const [uploadFiles, setUploadFiles] = useState<Record<string, File[]>>({});
 
   // Edit dialog
   const [editTarget, setEditTarget]   = useState<Supplier | null>(null);
@@ -71,9 +88,8 @@ export default function SuppliersPage() {
     setLoading(true);
     try {
       const res = await api.listSuppliers();
-      setSuppliers(res.suppliers ?? []);
+      setSuppliers((res.suppliers ?? []).map(normSupplier));
     } catch {
-      // Backend unreachable — start with empty list (no demo data)
       setSuppliers([]);
     } finally {
       setLoading(false);
@@ -82,6 +98,7 @@ export default function SuppliersPage() {
 
   // ── KPI counts ───────────────────────────────────────────────────
   const statusCounts = (s: OnboardStatus) => suppliers.filter(x => x.status === s).length;
+  const readyCount = statusCounts("validated") + statusCounts("active");
 
   // ── Invite ───────────────────────────────────────────────────────
   async function handleInvite() {
@@ -90,7 +107,7 @@ export default function SuppliersPage() {
     try {
       const created = await api.createSupplier(inviteForm.name, inviteForm.email, inviteForm.category);
       const newS: Supplier = {
-        id: created.supplier_id ?? Date.now().toString(),
+        id: String(created.supplier_id ?? Date.now()),
         ...inviteForm,
         status: "invited",
         completeness: 0,
@@ -101,9 +118,8 @@ export default function SuppliersPage() {
       setInviteForm({ name: "", email: "", category: "" });
       toast({ title: "Supplier invited", description: `Invite email sent to ${newS.email}` });
     } catch {
-      // Graceful fallback – backend not reachable
       const newS: Supplier = {
-        id: Date.now().toString(),
+        id: String(Date.now()),
         ...inviteForm,
         status: "invited",
         completeness: 0,
@@ -111,7 +127,7 @@ export default function SuppliersPage() {
       };
       setSuppliers(prev => [...prev, newS]);
       setInviteForm({ name: "", email: "", category: "" });
-      toast({ title: "Supplier added", description: "Backend not reachable; supplier added locally." });
+      toast({ title: "Supplier added (local)", description: "Backend not reachable; added locally." });
     } finally {
       setInviting(false);
     }
@@ -119,21 +135,64 @@ export default function SuppliersPage() {
 
   // ── Validate docs ────────────────────────────────────────────────
   async function handleValidate(supplier: Supplier) {
+    const files = uploadFiles[supplier.id] ?? [];
+
+    // Guard: must select at least one file first
+    if (files.length === 0) {
+      toast({
+        title: "No files selected",
+        description: "Please choose one or more documents to upload before validating.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setValidating(supplier.id);
     try {
-      const res = await api.validateSupplierDocs(supplier.id, uploadFiles);
+      const res = await api.validateSupplierDocs(supplier.id, files);
       setSuppliers(prev => prev.map(s =>
         s.id === supplier.id
-          ? { ...s, status: res.all_docs_present ? "validated" : "docs_received", completeness: res.completeness_pct, missing_docs: res.missing }
+          ? {
+              ...s,
+              status: res.all_docs_present ? "validated" : "docs_received",
+              completeness: res.completeness_pct,
+              missing_docs: res.missing,
+            }
           : s
       ));
-      toast({ title: res.all_docs_present ? "All docs validated" : "Docs incomplete", description: res.missing?.length ? `Missing: ${res.missing.join(", ")}` : "Supplier fully validated" });
-    } catch {
-      setSuppliers(prev => prev.map(s => s.id === supplier.id ? { ...s, status: "validated", completeness: 100, missing_docs: [] } : s));
-      toast({ title: "Validated (local)", description: "Backend not reachable — marked as validated locally." });
+      toast({
+        title: res.all_docs_present ? "All docs validated ✓" : "Docs incomplete",
+        description: res.missing?.length
+          ? `Missing: ${res.missing.join(", ")}`
+          : "Supplier fully validated.",
+      });
+    } catch (err: any) {
+      // Distinguish user/validation errors from genuine network failures
+      const msg: string = err?.message ?? "";
+      const isNetworkError =
+        msg.includes("Failed to fetch") ||
+        msg.includes("Network") ||
+        msg.includes("502") ||
+        msg.includes("503") ||
+        msg.includes("504");
+
+      if (isNetworkError) {
+        // Backend genuinely unreachable — apply local fallback
+        setSuppliers(prev => prev.map(s =>
+          s.id === supplier.id ? { ...s, status: "validated", completeness: 100, missing_docs: [] } : s
+        ));
+        toast({ title: "Validated (offline)", description: "Backend not reachable — marked as validated locally." });
+      } else {
+        // API returned a real error (e.g. 400, 422) — show the message
+        toast({
+          title: "Validation failed",
+          description: msg || "The server rejected the documents. Please check the files and try again.",
+          variant: "destructive",
+        });
+      }
     } finally {
       setValidating(null);
-      setUploadFiles([]);
+      setUploadFiles(prev => ({ ...prev, [supplier.id]: [] }));
     }
   }
 
@@ -151,7 +210,6 @@ export default function SuppliersPage() {
       setSuppliers(prev => prev.map(s => s.id === editTarget.id ? { ...s, ...editForm } : s));
       toast({ title: "Supplier updated", description: `${editForm.name} saved successfully.` });
     } catch {
-      // Fallback – apply locally
       setSuppliers(prev => prev.map(s => s.id === editTarget.id ? { ...s, ...editForm } : s));
       toast({ title: "Updated (local)", description: "Backend not reachable — changes saved locally." });
     } finally {
@@ -167,7 +225,7 @@ export default function SuppliersPage() {
     try {
       await api.deleteSupplier(deleteTarget.id);
     } catch {
-      // Fallback – remove locally regardless
+      // Remove locally regardless
     } finally {
       setSuppliers(prev => prev.filter(s => s.id !== deleteTarget.id));
       toast({ title: "Supplier removed", description: `${deleteTarget.name} has been deleted.` });
@@ -183,13 +241,52 @@ export default function SuppliersPage() {
         <p className="text-muted-foreground mt-1">Manage onboarding, invitations, and document validation</p>
       </div>
 
+      {/* ── Next-step CTA banner — shown when ≥1 supplier is ready ── */}
+      {readyCount > 0 && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">
+                  {readyCount} supplier{readyCount > 1 ? "s" : ""} ready for evaluation
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Upload their RFP responses and run technical + pricing analysis.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-2"
+                onClick={() => navigate("/supplier-responses")}
+              >
+                <Upload className="h-3.5 w-3.5" /> Upload Responses
+              </Button>
+              <Button
+                size="sm"
+                className="gap-2"
+                onClick={() => navigate("/analysis")}
+              >
+                <FlaskConical className="h-3.5 w-3.5" /> Run Analysis
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* KPI Strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {([
-          { label: "Total",         value: suppliers.length,                                              color: "text-foreground",  bg: "bg-muted/50" },
-          { label: "Invited",       value: statusCounts("invited"),                                       color: "text-blue-600",    bg: "bg-blue-50" },
-          { label: "Docs Received", value: statusCounts("docs_received"),                                 color: "text-yellow-600",  bg: "bg-yellow-50" },
-          { label: "Active",        value: statusCounts("active") + statusCounts("validated"),            color: "text-green-600",   bg: "bg-green-50" },
+          { label: "Total",         value: suppliers.length,                 color: "text-foreground",  bg: "bg-muted/50" },
+          { label: "Invited",       value: statusCounts("invited"),          color: "text-blue-600",    bg: "bg-blue-50" },
+          { label: "Docs Received", value: statusCounts("docs_received"),    color: "text-yellow-600",  bg: "bg-yellow-50" },
+          { label: "Active",        value: readyCount,                       color: "text-green-600",   bg: "bg-green-50" },
         ] as const).map(k => (
           <Card key={k.label}>
             <CardContent className={`p-4 ${k.bg} rounded-xl`}>
@@ -210,9 +307,9 @@ export default function SuppliersPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Input placeholder="Supplier name"                     value={inviteForm.name}     onChange={e => setInviteForm(p => ({ ...p, name: e.target.value }))} />
-            <Input placeholder="Contact email" type="email"        value={inviteForm.email}    onChange={e => setInviteForm(p => ({ ...p, email: e.target.value }))} />
-            <Input placeholder="Category (e.g. IT Infrastructure)" value={inviteForm.category} onChange={e => setInviteForm(p => ({ ...p, category: e.target.value }))} />
+            <Input placeholder="Supplier name"                      value={inviteForm.name}     onChange={e => setInviteForm(p => ({ ...p, name: e.target.value }))} />
+            <Input placeholder="Contact email" type="email"         value={inviteForm.email}    onChange={e => setInviteForm(p => ({ ...p, email: e.target.value }))} />
+            <Input placeholder="Category (e.g. IT Infrastructure)"  value={inviteForm.category} onChange={e => setInviteForm(p => ({ ...p, category: e.target.value }))} />
           </div>
           <Button onClick={handleInvite} disabled={inviting || !inviteForm.name || !inviteForm.email} className="gap-2">
             {inviting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
@@ -236,9 +333,10 @@ export default function SuppliersPage() {
       ) : (
         <div className="space-y-3">
           {suppliers.map(s => {
-            const cfg = STATUS_CONFIG[s.status];
+            const cfg = STATUS_CONFIG[s.status] ?? STATUS_CONFIG.pending;
             const StatusIcon = cfg.icon;
             const isOpen = expanded === s.id;
+            const filesForSupplier = uploadFiles[s.id] ?? [];
             return (
               <Card key={s.id} className="overflow-hidden">
                 <CardHeader className="pb-2 pt-4">
@@ -263,7 +361,6 @@ export default function SuppliersPage() {
                         <StatusIcon className="h-3 w-3" /> {cfg.label}
                       </span>
 
-                      {/* Edit */}
                       <button
                         onClick={() => openEdit(s)}
                         className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded"
@@ -272,7 +369,6 @@ export default function SuppliersPage() {
                         <Pencil className="h-3.5 w-3.5" />
                       </button>
 
-                      {/* Delete */}
                       <button
                         onClick={() => setDeleteTarget(s)}
                         className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded"
@@ -281,7 +377,6 @@ export default function SuppliersPage() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
 
-                      {/* Expand */}
                       <button
                         onClick={() => setExpanded(isOpen ? null : s.id)}
                         className="text-muted-foreground hover:text-foreground transition-colors"
@@ -294,7 +389,6 @@ export default function SuppliersPage() {
 
                 {isOpen && (
                   <CardContent className="pt-0 pb-4 space-y-3">
-                    {/* Completeness bar */}
                     {s.completeness !== undefined && (
                       <div className="space-y-1">
                         <div className="flex justify-between text-xs">
@@ -307,7 +401,6 @@ export default function SuppliersPage() {
                       </div>
                     )}
 
-                    {/* Missing docs */}
                     {s.missing_docs && s.missing_docs.length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         {s.missing_docs.map(d => (
@@ -318,18 +411,50 @@ export default function SuppliersPage() {
                       </div>
                     )}
 
-                    {/* Upload + validate */}
+                    {/* Upload + Validate — per-supplier file state */}
                     <div className="flex items-center gap-3">
                       <label className="flex items-center gap-2 cursor-pointer text-xs border rounded-lg px-3 py-2 hover:bg-muted/50 transition-colors">
                         <Upload className="h-3.5 w-3.5" />
-                        {uploadFiles.length ? `${uploadFiles.length} file(s) selected` : "Upload documents"}
-                        <input type="file" multiple className="hidden" onChange={e => setUploadFiles(Array.from(e.target.files ?? []))} />
+                        {filesForSupplier.length
+                          ? `${filesForSupplier.length} file(s) selected`
+                          : "Upload documents"}
+                        <input
+                          type="file"
+                          multiple
+                          className="hidden"
+                          onChange={e =>
+                            setUploadFiles(prev => ({ ...prev, [s.id]: Array.from(e.target.files ?? []) }))
+                          }
+                        />
                       </label>
-                      <Button size="sm" variant="outline" className="gap-2" onClick={() => handleValidate(s)} disabled={validating === s.id}>
-                        {validating === s.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => handleValidate(s)}
+                        disabled={validating === s.id}
+                      >
+                        {validating === s.id
+                          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          : <CheckCircle2 className="h-3.5 w-3.5" />}
                         Validate Docs
                       </Button>
                     </div>
+
+                    {/* Per-supplier next-step shortcuts */}
+                    {(s.status === "validated" || s.status === "active") && (
+                      <div className="pt-1 flex gap-2 border-t">
+                        <p className="text-xs text-muted-foreground self-center mr-1">Next steps:</p>
+                        <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7"
+                          onClick={() => navigate("/supplier-responses")}>
+                          <Upload className="h-3 w-3" /> Upload RFP Response
+                        </Button>
+                        <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7"
+                          onClick={() => navigate("/analysis")}>
+                          <FlaskConical className="h-3 w-3" /> Run Analysis
+                        </Button>
+                      </div>
+                    )}
                   </CardContent>
                 )}
               </Card>
