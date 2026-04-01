@@ -11,6 +11,8 @@ import DashboardPage from "@/pages/DashboardPage";
 import ProjectsPage from "@/pages/ProjectsPage";
 import NewRfpPage from "@/pages/NewRfpPage";
 import SupplierResponsesPage from "@/pages/SupplierResponsesPage";
+import SuppliersPage from "@/pages/SuppliersPage";
+import DrawingsPage from "@/pages/DrawingsPage";
 import AnalysisPage from "@/pages/AnalysisPage";
 import ScenariosPage from "@/pages/ScenariosPage";
 import CommunicationsPage from "@/pages/CommunicationsPage";
@@ -39,10 +41,12 @@ const App = () => (
                       <Route path="/"                  element={<DashboardPage />} />
                       <Route path="/projects"          element={<ProjectsPage />} />
                       <Route path="/rfp/new"           element={<NewRfpPage />} />
-                      <Route path="/suppliers"         element={<SupplierResponsesPage />} />
+                      <Route path="/supplier-responses" element={<SupplierResponsesPage />} />
+                      <Route path="/suppliers"         element={<SuppliersPage />} />
                       <Route path="/analysis"          element={<AnalysisPage />} />
                       <Route path="/pricing"           element={<PricingPage />} />
                       <Route path="/scenarios"         element={<ScenariosPage />} />
+                      <Route path="/drawings"          element={<DrawingsPage />} />
                       <Route path="/communications"    element={<CommunicationsPage />} />
                       <Route path="*"                  element={<NotFound />} />
                     </Routes>

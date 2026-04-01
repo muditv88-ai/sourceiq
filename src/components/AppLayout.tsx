@@ -12,6 +12,7 @@ import {
   Users,
   LogOut,
   UserCircle2,
+  FileImage,
 } from "lucide-react";
 import ChatWidget from "@/components/ChatWidget";
 import { useAuth } from "@/contexts/AuthContext";
@@ -24,14 +25,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const navItems = [
-  { to: "/",             icon: LayoutDashboard,  label: "Dashboard" },
-  { to: "/projects",     icon: FolderOpen,        label: "Projects" },
-  { to: "/rfp/new",      icon: FilePlus,          label: "New RFP" },
-  { to: "/suppliers",    icon: Users,             label: "Supplier Responses" },
-  { to: "/analysis",     icon: BarChart3,         label: "Technical Analysis" },
-  { to: "/pricing",      icon: DollarSign,        label: "Pricing Analysis" },
-  { to: "/scenarios",    icon: SlidersHorizontal, label: "Scenarios" },
-  { to: "/communications", icon: Mail,            label: "Communications" },
+  { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
+  { to: "/projects",       icon: FolderOpen,        label: "Projects" },
+  { to: "/rfp/new",        icon: FilePlus,          label: "New RFP" },
+  { to: "/suppliers",      icon: Users,             label: "Suppliers" },
+  { to: "/analysis",       icon: BarChart3,         label: "Technical Analysis" },
+  { to: "/pricing",        icon: DollarSign,        label: "Pricing Analysis" },
+  { to: "/scenarios",      icon: SlidersHorizontal, label: "Scenarios" },
+  { to: "/drawings",       icon: FileImage,         label: "Drawings" },
+  { to: "/communications", icon: Mail,              label: "Communications" },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -58,11 +60,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <nav className="flex-1 px-3 space-y-1 mt-4">
+        <nav className="flex-1 px-3 space-y-1 mt-4 overflow-y-auto">
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
+              end={to === "/"}
               className={cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
                 location.pathname === to
@@ -70,7 +73,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
               )}
             >
-              <Icon className="h-4.5 w-4.5" />
+              <Icon className="h-4 w-4 shrink-0" />
               {label}
             </NavLink>
           ))}
