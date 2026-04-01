@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
 import { analysisStore } from "@/lib/analysisStore";
+import { projectStore } from "@/lib/projectStore";
 import type { Project } from "@/lib/types";
 import {
   FolderOpen, Upload, X, Play, CheckCircle2, AlertCircle,
-  Loader2, Users, Brain, BarChart3, Clock,
+  Loader2, Users, Brain, BarChart3, Clock, DollarSign,
 } from "lucide-react";
 
 type ViewState = "select" | "manage";
@@ -37,7 +38,6 @@ export default function SupplierResponsesPage() {
   const [analysisMsgIdx, setAMsgIdx]  = useState(0);
   const [actionMsg, setActionMsg]     = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  // Per-supplier name overrides (filename → display name)
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -60,12 +60,22 @@ export default function SupplierResponsesPage() {
     return t;
   };
 
+  /** Called whenever a project card is clicked — persists context for PricingPage */
+  const selectProject = (p: Project) => {
+    setSelected(p);
+    setView("manage");
+    setActionMsg(null);
+    setActionError(null);
+    // Store project context so PricingPage can run without technical analysis
+    projectStore.setProject(p.project_id, p.project_id, p.name);
+  };
+
   const handleSupplierUpload = async (files: File[]) => {
     if (!selected || !files.length) return;
     setBusy(true); setActionError(null);
     for (let i = 0; i < files.length; i++) {
       setActionMsg(`Uploading ${i + 1}/${files.length}: ${files[i].name}`);
-      const stem = files[i].name.replace(/\.[^.]+$/, "");
+      const stem     = files[i].name.replace(/\.[^.]+$/, "");
       const override = nameOverrides[files[i].name] || stem;
       try {
         await api.uploadProjectSupplier(selected.project_id, files[i], override);
@@ -84,6 +94,7 @@ export default function SupplierResponsesPage() {
     await refreshSelected(selected.project_id);
   };
 
+  /** Full technical analysis → navigate to /analysis */
   const handleAnalyse = async () => {
     if (!selected) return;
     setAnalysing(true); setActionError(null); setAMsgIdx(0);
@@ -101,9 +112,16 @@ export default function SupplierResponsesPage() {
     }
   };
 
+  /** Skip technical analysis — go straight to pricing */
+  const handleGoToPricing = () => {
+    if (!selected) return;
+    // projectStore already set in selectProject(); navigate directly
+    navigate("/pricing");
+  };
+
   // ── Analysis spinner ─────────────────────────────────────────────────────
   if (analysing) {
-    const msg = ANALYSIS_MESSAGES[Math.min(analysisMsgIdx, ANALYSIS_MESSAGES.length - 1)];
+    const msg      = ANALYSIS_MESSAGES[Math.min(analysisMsgIdx, ANALYSIS_MESSAGES.length - 1)];
     const progress = Math.min(95, ((analysisMsgIdx + 1) / ANALYSIS_MESSAGES.length) * 100);
     return (
       <div className="max-w-3xl mx-auto">
@@ -128,7 +146,10 @@ export default function SupplierResponsesPage() {
                 <span>Processing</span><span>{Math.round(progress)}%</span>
               </div>
               <div className="bg-muted rounded-full h-2 overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all duration-[2000ms] ease-in-out" style={{ width: `${progress}%` }} />
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-[2000ms] ease-in-out"
+                  style={{ width: `${progress}%` }}
+                />
               </div>
             </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -159,9 +180,11 @@ export default function SupplierResponsesPage() {
               </p>
             ) : (
               projects.map(p => (
-                <button key={p.project_id}
-                  onClick={() => { setSelected(p); setView("manage"); setActionMsg(null); setActionError(null); }}
-                  className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/40 transition-colors text-left">
+                <button
+                  key={p.project_id}
+                  onClick={() => selectProject(p)}
+                  className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/40 transition-colors text-left"
+                >
                   <FolderOpen className="h-4 w-4 text-primary shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-medium truncate">{p.name}</p>
@@ -182,7 +205,7 @@ export default function SupplierResponsesPage() {
   }
 
   // ── Manage suppliers ──────────────────────────────────────────────────────
-  const suppliers = selected?.suppliers ?? [];
+  const suppliers  = selected?.suppliers ?? [];
   const canAnalyse = !!selected?.rfp_filename && suppliers.length > 0;
 
   return (
@@ -190,11 +213,18 @@ export default function SupplierResponsesPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button onClick={() => setView("select")} className="text-muted-foreground hover:text-foreground text-sm">← Projects</button>
+          <button
+            onClick={() => setView("select")}
+            className="text-muted-foreground hover:text-foreground text-sm"
+          >
+            ← Projects
+          </button>
           <span className="text-muted-foreground">/</span>
           <h1 className="text-xl font-bold">{selected?.name}</h1>
         </div>
-        <span className="text-xs text-muted-foreground">{suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""}</span>
+        <span className="text-xs text-muted-foreground">
+          {suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""}
+        </span>
       </div>
 
       {/* Feedback */}
@@ -212,14 +242,18 @@ export default function SupplierResponsesPage() {
       {!selected?.rfp_filename && (
         <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          No RFP uploaded for this project yet. <button onClick={() => navigate("/rfp/new")} className="underline ml-1">Upload RFP →</button>
+          No RFP uploaded for this project yet.{
+            " "}
+          <button onClick={() => navigate("/rfp/new")} className="underline ml-1">Upload RFP →</button>
         </div>
       )}
 
       {/* Upload card */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Upload Supplier Responses</CardTitle>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="h-4 w-4" /> Upload Supplier Responses
+          </CardTitle>
           <CardDescription>
             Upload one file per supplier. The supplier name will be read from the document automatically.
             You can also set a custom name per file below.
@@ -250,14 +284,11 @@ export default function SupplierResponsesPage() {
                 <div key={s.path} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-muted/40">
                   <Upload className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
-                    {/* Editable supplier display name */}
                     <input
                       defaultValue={s.name}
                       onBlur={async (e) => {
                         const newName = e.target.value.trim();
                         if (newName && newName !== s.name && selected) {
-                          // Re-upload is not needed — just patch the meta via supplier endpoint convention.
-                          // We store the override in local state for UX; a full rename would need a PATCH endpoint.
                           setNameOverrides(prev => ({ ...prev, [fname]: newName }));
                           setActionMsg(`Display name updated to "${newName}" — will apply on next run`);
                         }
@@ -266,8 +297,10 @@ export default function SupplierResponsesPage() {
                     />
                     <p className="text-xs text-muted-foreground truncate">{fname}</p>
                   </div>
-                  <button onClick={() => handleRemove(fname)}
-                    className="text-muted-foreground hover:text-destructive transition-colors">
+                  <button
+                    onClick={() => handleRemove(fname)}
+                    className="text-muted-foreground hover:text-destructive transition-colors"
+                  >
                     <X className="h-4 w-4" />
                   </button>
                 </div>
@@ -277,27 +310,67 @@ export default function SupplierResponsesPage() {
         </Card>
       )}
 
-      {/* Run analysis */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><BarChart3 className="h-4 w-4" /> Run Analysis</CardTitle>
-          <CardDescription>
-            Runs technical scoring + pricing analysis across all uploaded supplier responses.
-            Files are stored — no re-upload needed for re-runs.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button onClick={handleAnalyse} disabled={!canAnalyse || busy || analysing} className="w-full gap-2">
-            <Play className="h-4 w-4" />
-            Run Analysis ({suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""})
-          </Button>
-          {!canAnalyse && (
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              {!selected?.rfp_filename ? "Upload RFP first" : "Add at least one supplier file"}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+      {/* ── Action cards ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        {/* Card 1: Full technical + pricing analysis */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Brain className="h-4 w-4" /> Technical Analysis
+            </CardTitle>
+            <CardDescription>
+              Score all suppliers against RFP criteria, generate rankings and
+              insights, then view pricing.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              onClick={handleAnalyse}
+              disabled={!canAnalyse || busy || analysing}
+              className="w-full gap-2"
+            >
+              <Play className="h-4 w-4" />
+              Run Full Analysis
+            </Button>
+            {!canAnalyse && (
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                {!selected?.rfp_filename ? "Upload RFP first" : "Add at least one supplier file"}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Card 2: Pricing only */}
+        <Card className="border-primary/30 bg-primary/5">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-primary" /> Pricing Only
+            </CardTitle>
+            <CardDescription>
+              Skip technical scoring — go straight to pricing extraction,
+              cost comparison and award scenario modelling.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              onClick={handleGoToPricing}
+              disabled={!canAnalyse || busy}
+              className="w-full gap-2 border-primary/40 hover:bg-primary/10"
+            >
+              <BarChart3 className="h-4 w-4" />
+              Go to Pricing Analysis
+            </Button>
+            {!canAnalyse && (
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                {!selected?.rfp_filename ? "Upload RFP first" : "Add at least one supplier file"}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+      </div>
     </div>
   );
 }

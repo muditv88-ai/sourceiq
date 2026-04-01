@@ -1,8 +1,11 @@
 /**
- * PricingPage v2
+ * PricingPage v3
  *
- * Calls the dedicated /pricing-analysis/analyze endpoint,
- * polls for completion, then renders:
+ * Can run in two modes:
+ * 1. After technical analysis — reads rfp_id / project_id from analysisStore
+ * 2. Directly from supplier upload — reads from projectStore (skips tech analysis)
+ *
+ * Renders:
  *   - L1 / L2 / L3 supplier ranking cards
  *   - Full price matrix (unit prices per line item, lowest highlighted green)
  *   - Best-of-Best breakdown (cheapest supplier per SKU, savings vs worst)
@@ -20,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { analysisStore } from "@/lib/analysisStore";
 import { pricingStore } from "@/lib/pricingStore";
+import { projectStore } from "@/lib/projectStore";
 import { api } from "@/lib/api";
 import type { PricingResult, PriceComparisonRow } from "@/lib/types";
 import {
@@ -30,8 +34,15 @@ import {
 type Tab = "matrix" | "bob" | "award";
 
 export default function PricingPage() {
-  const navigate        = useNavigate();
-  const analysisResult  = analysisStore.getResult();
+  const navigate       = useNavigate();
+  const analysisResult = analysisStore.getResult();
+
+  // rfpId / projectId: prefer analysisStore, fall back to projectStore
+  const rfpId     = analysisResult?.rfp_id     ?? projectStore.getRfpId()     ?? null;
+  const projectId = (analysisResult as any)?._project_id
+                    ?? projectStore.getProjectId()
+                    ?? null;
+  const projectName = projectStore.getProjectName();
 
   const [pricing, setPricing]     = useState<PricingResult | null>(
     () => pricingStore.getResult()
@@ -40,29 +51,25 @@ export default function PricingPage() {
   const [error, setError]         = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("matrix");
 
-  const rfpId     = analysisResult?.rfp_id;
-  const projectId = (analysisResult as any)?._project_id as string | undefined;
+  const matrixSuppliers = pricing?.cost_model?.suppliers ?? [];
+  const descriptions    = (pricing?.cost_model as any)?.descriptions as string[] ?? [];
+  const matrix          = pricing?.cost_model?.matrix ?? {};
+  const totalCosts      = pricing?.total_costs ?? [];
+  const bob             = pricing?.best_of_best ?? null;
+  const award           = pricing?.award_recommendation ?? null;
 
-  const matrixSuppliers  = pricing?.cost_model?.suppliers ?? [];
-  const descriptions     = pricing?.cost_model?.descriptions ?? (pricing?.cost_model as any)?.descriptions ?? [];
-  const matrix           = pricing?.cost_model?.matrix ?? {};
-  const totalCosts       = pricing?.total_costs ?? [];
-  const bob              = pricing?.best_of_best ?? null;
-  const award            = pricing?.award_recommendation ?? null;
-
-  // Simple fallback: lightweight rows from the technical analysis run
+  // Lightweight fallback rows from technical analysis
   const simplePriceRows: PriceComparisonRow[] =
     analysisResult?.price_comparison ?? [];
-
-  // ── Supplier display names for the fallback table ───────────────────────────
-  const analysisSuppliers = analysisResult?.suppliers?.map(s => s.supplier_name) ?? [];
+  const analysisSuppliers =
+    analysisResult?.suppliers?.map(s => s.supplier_name) ?? [];
 
   async function runPricingAnalysis() {
     if (!rfpId) return;
     setLoading(true);
     setError(null);
     try {
-      const result = await api.runPricingAnalysis(rfpId, projectId);
+      const result = await api.runPricingAnalysis(rfpId, projectId ?? undefined);
       pricingStore.setResult(rfpId, result);
       setPricing(result);
     } catch (e: any) {
@@ -72,8 +79,9 @@ export default function PricingPage() {
     }
   }
 
-  // ── Guard: nothing to show at all ──────────────────────────────────────────
-  if (!analysisResult && !pricing) {
+  // ── Guard: no context at all ──────────────────────────────────────────────
+  // Only block if we have neither an analysis result NOR a project in projectStore
+  if (!analysisResult && !rfpId && !pricing) {
     return (
       <div className="max-w-3xl mx-auto space-y-6">
         <h1 className="text-2xl font-bold">Pricing Analysis</h1>
@@ -81,9 +89,9 @@ export default function PricingPage() {
           <CardContent className="flex flex-col items-center py-16 text-center gap-4">
             <DollarSign className="h-12 w-12 text-muted-foreground/40" />
             <div>
-              <p className="font-semibold text-lg">No analysis result yet</p>
+              <p className="font-semibold text-lg">No project selected</p>
               <p className="text-sm text-muted-foreground mt-1">
-                Run the technical analysis first, then return here to run pricing.
+                Upload supplier responses first, then come back here to run pricing.
               </p>
             </div>
             <Button onClick={() => navigate("/suppliers")} className="gap-2">
@@ -95,19 +103,26 @@ export default function PricingPage() {
     );
   }
 
+  // ── No dedicated pricing run yet — show CTA ───────────────────────────────
+  // (Happens when user navigates directly from supplier upload, skipping tech analysis)
+  const showRunCta = !pricing && simplePriceRows.length === 0;
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
 
-      {/* ─ Page header with action buttons ───────────────────────────────────────── */}
+      {/* ─ Page header ──────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold">Pricing Analysis</h1>
           <p className="text-muted-foreground mt-1 text-sm">
+            {projectName && !analysisResult && (
+              <span className="font-medium text-foreground">{projectName} · </span>
+            )}
             {pricing
-              ? `${matrixSuppliers.length} supplier${matrixSuppliers.length !== 1 ? "s" : ""} · ${
-                  (descriptions as string[]).length
-                } line items`
-              : "Run dedicated pricing analysis for full scenario modelling"}
+              ? `${matrixSuppliers.length} supplier${
+                  matrixSuppliers.length !== 1 ? "s" : ""
+                } · ${descriptions.length} line items`
+              : "Run pricing analysis to extract and compare supplier costs"}
           </p>
         </div>
         <div className="flex gap-2">
@@ -126,7 +141,7 @@ export default function PricingPage() {
             className="gap-2"
           >
             {loading ? (
-              <><RefreshCw className="h-4 w-4 animate-spin" /> Analysing…</>
+              <><RefreshCw className="h-4 w-4 animate-spin" /> Analysing&hellip;</>
             ) : pricing ? (
               <><RefreshCw className="h-4 w-4" /> Re-run Pricing</>
             ) : (
@@ -136,7 +151,7 @@ export default function PricingPage() {
         </div>
       </div>
 
-      {/* ─ Error banner ──────────────────────────────────────────────────────────── */}
+      {/* ─ Error banner ─────────────────────────────────────────────────── */}
       {error && (
         <Card className="border-destructive">
           <CardContent className="p-4 flex gap-3 items-center text-destructive">
@@ -146,8 +161,24 @@ export default function PricingPage() {
         </Card>
       )}
 
-      {/* ═══════════════════ FULL PRICING RESULT ══════════════════════════════════ */}
-      {pricing ? (
+      {/* ─ First-run CTA (no pricing yet, no fallback rows either) ───────── */}
+      {showRunCta && (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center py-14 text-center gap-4">
+            <BarChart3 className="h-12 w-12 text-muted-foreground/40" />
+            <div>
+              <p className="font-semibold text-lg">Ready to analyse pricing</p>
+              <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                Click <strong>Run Pricing Analysis</strong> above to extract prices
+                from supplier documents and model award scenarios.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ══════════════════ FULL PRICING RESULT ══════════════════════════ */}
+      {pricing && (
         <>
           {/* L1 / L2 / L3 ranking cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -235,7 +266,7 @@ export default function PricingPage() {
             ))}
           </div>
 
-          {/* ─ Tab: Price Matrix ──────────────────────────────────────────────────── */}
+          {/* ─ Tab: Price Matrix ─────────────────────────────────────────── */}
           {activeTab === "matrix" && (
             <Card>
               <CardHeader>
@@ -249,45 +280,25 @@ export default function PricingPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b bg-muted/30">
-                        <th className="text-left py-2 pr-4 font-semibold text-muted-foreground pl-2">
-                          Line Item
-                        </th>
-                        <th className="text-left py-2 pr-4 font-semibold text-muted-foreground">
-                          Category
-                        </th>
+                        <th className="text-left py-2 pr-4 pl-2 font-semibold text-muted-foreground">Line Item</th>
+                        <th className="text-left py-2 pr-4 font-semibold text-muted-foreground">Category</th>
                         {matrixSuppliers.map((s) => (
-                          <th
-                            key={s}
-                            className="text-right py-2 px-3 font-semibold"
-                          >
-                            {s}
-                          </th>
+                          <th key={s} className="text-right py-2 px-3 font-semibold">{s}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {(descriptions as string[]).map((desc) => {
-                        const row = matrix[desc] ?? {};
-                        const prices = matrixSuppliers
+                      {descriptions.map((desc) => {
+                        const row      = matrix[desc] ?? {};
+                        const prices   = matrixSuppliers
                           .map((s) => row[s]?.unit_price ?? null)
                           .filter((p): p is number => p !== null && p > 0);
                         const minPrice = prices.length ? Math.min(...prices) : null;
-                        const category =
-                          Object.values(row).find((v) => v?.category)?.category ?? "—";
+                        const category = Object.values(row).find((v) => v?.category)?.category ?? "—";
                         return (
-                          <tr
-                            key={desc}
-                            className="border-b last:border-0 hover:bg-muted/20"
-                          >
-                            <td
-                              className="py-2 pr-4 pl-2 font-medium max-w-xs truncate"
-                              title={desc}
-                            >
-                              {desc}
-                            </td>
-                            <td className="py-2 pr-4 text-xs text-muted-foreground">
-                              {category}
-                            </td>
+                          <tr key={desc} className="border-b last:border-0 hover:bg-muted/20">
+                            <td className="py-2 pr-4 pl-2 font-medium max-w-xs truncate" title={desc}>{desc}</td>
+                            <td className="py-2 pr-4 text-xs text-muted-foreground">{category}</td>
                             {matrixSuppliers.map((s) => {
                               const val   = row[s];
                               const isMin = val && minPrice !== null && val.unit_price === minPrice;
@@ -295,15 +306,12 @@ export default function PricingPage() {
                                 <td
                                   key={s}
                                   className={`py-2 px-3 text-right font-mono text-xs ${
-                                    isMin
-                                      ? "text-green-700 bg-green-50 font-semibold"
-                                      : ""
+                                    isMin ? "text-green-700 bg-green-50 font-semibold" : ""
                                   }`}
                                 >
                                   {val ? (
                                     `$${val.unit_price.toLocaleString(undefined, {
-                                      minimumFractionDigits: 4,
-                                      maximumFractionDigits: 4,
+                                      minimumFractionDigits: 4, maximumFractionDigits: 4,
                                     })}`
                                   ) : (
                                     <span className="text-muted-foreground/40">—</span>
@@ -321,18 +329,16 @@ export default function PricingPage() {
             </Card>
           )}
 
-          {/* ─ Tab: Best of Best ───────────────────────────────────────────────────── */}
+          {/* ─ Tab: Best of Best ─────────────────────────────────────────── */}
           {activeTab === "bob" && bob && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Best of Best</CardTitle>
                 <CardDescription>
-                  Theoretical minimum — cheapest supplier per line item from any supplier.
+                  Theoretical minimum — cheapest supplier per line item.{" "}
                   Grand total:{" "}
                   <strong>
-                    ${bob.total_cost.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                    })}
+                    ${bob.total_cost.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </strong>
                 </CardDescription>
               </CardHeader>
@@ -341,33 +347,17 @@ export default function PricingPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b bg-muted/30">
-                        <th className="text-left py-2 pr-4 pl-2 font-semibold text-muted-foreground">
-                          Line Item
-                        </th>
-                        <th className="text-left py-2 pr-4 font-semibold text-muted-foreground">
-                          Best Supplier
-                        </th>
-                        <th className="text-right py-2 pr-4 font-semibold text-muted-foreground">
-                          Unit Price
-                        </th>
-                        <th className="text-right py-2 pr-4 font-semibold text-muted-foreground">
-                          Line Total
-                        </th>
-                        <th className="text-right py-2 font-semibold text-muted-foreground">
-                          Saving vs Worst
-                        </th>
+                        <th className="text-left py-2 pr-4 pl-2 font-semibold text-muted-foreground">Line Item</th>
+                        <th className="text-left py-2 pr-4 font-semibold text-muted-foreground">Best Supplier</th>
+                        <th className="text-right py-2 pr-4 font-semibold text-muted-foreground">Unit Price</th>
+                        <th className="text-right py-2 pr-4 font-semibold text-muted-foreground">Line Total</th>
+                        <th className="text-right py-2 font-semibold text-muted-foreground">Saving vs Worst</th>
                       </tr>
                     </thead>
                     <tbody>
                       {bob.breakdown.map((b) => (
-                        <tr
-                          key={b.description}
-                          className="border-b last:border-0 hover:bg-muted/20"
-                        >
-                          <td
-                            className="py-2 pr-4 pl-2 font-medium max-w-xs truncate"
-                            title={b.description}
-                          >
+                        <tr key={b.description} className="border-b last:border-0 hover:bg-muted/20">
+                          <td className="py-2 pr-4 pl-2 font-medium max-w-xs truncate" title={b.description}>
                             {b.description}
                           </td>
                           <td className="py-2 pr-4">
@@ -375,20 +365,15 @@ export default function PricingPage() {
                           </td>
                           <td className="py-2 pr-4 text-right font-mono text-xs">
                             ${b.best_unit_price?.toLocaleString(undefined, {
-                              minimumFractionDigits: 4,
-                              maximumFractionDigits: 4,
+                              minimumFractionDigits: 4, maximumFractionDigits: 4,
                             })}
                           </td>
                           <td className="py-2 pr-4 text-right font-mono text-xs text-green-700 font-semibold">
-                            ${b.best_total.toLocaleString(undefined, {
-                              minimumFractionDigits: 2,
-                            })}
+                            ${b.best_total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </td>
                           <td className="py-2 text-right font-mono text-xs text-orange-600">
                             {b.savings_vs_worst > 0
-                              ? `$${b.savings_vs_worst.toLocaleString(undefined, {
-                                  minimumFractionDigits: 2,
-                                })}`
+                              ? `$${b.savings_vs_worst.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
                               : <span className="text-muted-foreground/40">—</span>}
                           </td>
                         </tr>
@@ -396,7 +381,6 @@ export default function PricingPage() {
                     </tbody>
                   </table>
                 </div>
-                {/* Wins summary */}
                 {bob.wins_by_supplier && (
                   <div className="mt-4 pt-3 border-t flex gap-6 flex-wrap">
                     {Object.entries(bob.wins_by_supplier).map(([s, w]) => (
@@ -411,35 +395,23 @@ export default function PricingPage() {
             </Card>
           )}
 
-          {/* ─ Tab: All Strategies ─────────────────────────────────────────────────── */}
+          {/* ─ Tab: All Strategies ───────────────────────────────────────── */}
           {activeTab === "award" && award && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Strategy Comparison</CardTitle>
-                <CardDescription>
-                  All award scenarios ranked by total cost
-                </CardDescription>
+                <CardDescription>All award scenarios ranked by total cost</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b bg-muted/30">
-                        <th className="text-left py-2 pl-2 font-semibold text-muted-foreground">
-                          Strategy
-                        </th>
-                        <th className="text-right py-2 px-3 font-semibold text-muted-foreground">
-                          Total Cost
-                        </th>
-                        <th className="text-center py-2 px-3 font-semibold text-muted-foreground">
-                          Complexity
-                        </th>
-                        <th className="text-center py-2 px-3 font-semibold text-muted-foreground">
-                          Risk
-                        </th>
-                        <th className="text-right py-2 font-semibold text-muted-foreground">
-                          Saving vs Worst
-                        </th>
+                        <th className="text-left py-2 pl-2 font-semibold text-muted-foreground">Strategy</th>
+                        <th className="text-right py-2 px-3 font-semibold text-muted-foreground">Total Cost</th>
+                        <th className="text-center py-2 px-3 font-semibold text-muted-foreground">Complexity</th>
+                        <th className="text-center py-2 px-3 font-semibold text-muted-foreground">Risk</th>
+                        <th className="text-right py-2 font-semibold text-muted-foreground">Saving vs Worst</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -447,49 +419,35 @@ export default function PricingPage() {
                         <tr
                           key={i}
                           className={`border-b last:border-0 hover:bg-muted/20 ${
-                            s.strategy === award.recommended_strategy
-                              ? "bg-blue-50/60"
-                              : ""
+                            s.strategy === award.recommended_strategy ? "bg-blue-50/60" : ""
                           }`}
                         >
                           <td className="py-2.5 pr-4 pl-2 font-medium">
                             {s.strategy}
                             {s.strategy === award.recommended_strategy && (
-                              <Badge className="ml-2 text-xs" variant="default">
-                                Recommended
-                              </Badge>
+                              <Badge className="ml-2 text-xs" variant="default">Recommended</Badge>
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono text-xs">
-                            ${s.total.toLocaleString(undefined, {
-                              minimumFractionDigits: 2,
-                            })}
+                            ${s.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </td>
                           <td className="py-2.5 px-3 text-center">
                             <Badge
                               variant={
-                                s.complexity === "Low"
-                                  ? "secondary"
-                                  : s.complexity === "Very High"
-                                  ? "destructive"
-                                  : "outline"
+                                s.complexity === "Low" ? "secondary"
+                                : s.complexity === "Very High" ? "destructive"
+                                : "outline"
                               }
-                            >
-                              {s.complexity}
-                            </Badge>
+                            >{s.complexity}</Badge>
                           </td>
                           <td className="py-2.5 px-3 text-center">
                             <Badge
                               variant={
-                                s.risk === "Low"
-                                  ? "secondary"
-                                  : s.risk === "High" || s.risk === "Very High"
-                                  ? "destructive"
-                                  : "outline"
+                                s.risk === "Low" ? "secondary"
+                                : (s.risk === "High" || s.risk === "Very High") ? "destructive"
+                                : "outline"
                               }
-                            >
-                              {s.risk}
-                            </Badge>
+                            >{s.risk}</Badge>
                           </td>
                           <td className="py-2.5 text-right font-mono text-xs text-green-700">
                             {s.saving_vs_worst_pct > 0
@@ -505,101 +463,63 @@ export default function PricingPage() {
             </Card>
           )}
         </>
-      ) : (
-        /* ══════════════════ FALLBACK: simple price_comparison ═════════════════════ */
-        <>
-          {simplePriceRows.length > 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4" /> Quoted Prices
-                </CardTitle>
-                <CardDescription>
-                  Basic price table from the technical analysis run.
-                  Click “Run Pricing Analysis” above for full scenario modelling,
-                  savings analysis, and Excel export.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b bg-muted/30">
-                        <th className="text-left py-2 pr-4 pl-2 font-semibold text-muted-foreground">
-                          Line Item
-                        </th>
+      )}
+
+      {/* ══════════════ FALLBACK: simple price_comparison ════════════════ */}
+      {!pricing && simplePriceRows.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" /> Quoted Prices
+            </CardTitle>
+            <CardDescription>
+              Basic price table from the technical analysis run.
+              Click "Run Pricing Analysis" above for full scenario modelling and Excel export.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/30">
+                    <th className="text-left py-2 pr-4 pl-2 font-semibold text-muted-foreground">Line Item</th>
+                    {analysisSuppliers.map((s) => (
+                      <th key={s} className="text-right py-2 px-3 font-semibold">{s}</th>
+                    ))}
+                    <th className="text-right py-2 font-semibold text-muted-foreground">Unit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {simplePriceRows.map((row) => {
+                    const entries = Object.entries(row.suppliers)
+                      .map(([k, v]) => ({ k, n: parseFloat(v.replace(/[^0-9.]/g, "")) }))
+                      .filter((x) => !isNaN(x.n) && x.n > 0);
+                    const minVal       = entries.length ? Math.min(...entries.map(x => x.n)) : null;
+                    const bestSupplier = entries.find(x => x.n === minVal)?.k ?? null;
+                    return (
+                      <tr key={row.line_item} className="border-b last:border-0 hover:bg-muted/20">
+                        <td className="py-2.5 pr-4 pl-2 font-medium">{row.line_item}</td>
                         {analysisSuppliers.map((s) => (
-                          <th
+                          <td
                             key={s}
-                            className="text-right py-2 px-3 font-semibold"
+                            className={`py-2.5 px-3 text-right font-mono text-xs ${
+                              s === bestSupplier ? "text-green-700 bg-green-50 font-semibold" : ""
+                            }`}
                           >
-                            {s}
-                          </th>
+                            {row.suppliers[s] ?? <span className="text-muted-foreground/40">—</span>}
+                          </td>
                         ))}
-                        <th className="text-right py-2 font-semibold text-muted-foreground">
-                          Unit
-                        </th>
+                        <td className="py-2.5 text-right text-xs text-muted-foreground">
+                          {row.unit || "—"}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {simplePriceRows.map((row) => {
-                        // Highlight cheapest supplier in each row
-                        const entries = Object.entries(row.suppliers)
-                          .map(([k, v]) => ({
-                            k,
-                            n: parseFloat(v.replace(/[^0-9.]/g, "")),
-                          }))
-                          .filter((x) => !isNaN(x.n) && x.n > 0);
-                        const minVal      = entries.length ? Math.min(...entries.map((x) => x.n)) : null;
-                        const bestSupplier = entries.find((x) => x.n === minVal)?.k ?? null;
-                        return (
-                          <tr
-                            key={row.line_item}
-                            className="border-b last:border-0 hover:bg-muted/20"
-                          >
-                            <td className="py-2.5 pr-4 pl-2 font-medium">
-                              {row.line_item}
-                            </td>
-                            {analysisSuppliers.map((s) => (
-                              <td
-                                key={s}
-                                className={`py-2.5 px-3 text-right font-mono text-xs ${
-                                  s === bestSupplier
-                                    ? "text-green-700 bg-green-50 font-semibold"
-                                    : ""
-                                }`}
-                              >
-                                {row.suppliers[s] ?? (
-                                  <span className="text-muted-foreground/40">—</span>
-                                )}
-                              </td>
-                            ))}
-                            <td className="py-2.5 text-right text-xs text-muted-foreground">
-                              {row.unit || "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardContent className="flex flex-col items-center py-14 text-center gap-3">
-                <TrendingDown className="h-10 w-10 text-muted-foreground/40" />
-                <div>
-                  <p className="font-semibold">No pricing data yet</p>
-                  <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-                    Click “Run Pricing Analysis” to extract prices from supplier
-                    documents and model award scenarios.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
