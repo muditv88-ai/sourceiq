@@ -1,3 +1,4 @@
+// cache-bust: 1775164179
 import React, { useState } from "react";
 import { DollarSign, TrendingDown, BarChart2, Filter, Download } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
