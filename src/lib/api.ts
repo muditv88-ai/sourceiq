@@ -1,345 +1,323 @@
-import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, PricingResult, RFPStructuredView } from "./types";
-import { getToken } from "./auth";
+import { API_BASE_URL } from "./config";
 
-const BASE_URL = "/api";
-
-// ── Generic helpers ────────────────────────────────────────────────────────────────────────────
-async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const token = getToken();
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      "ngrok-skip-browser-warning": "true",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options?.headers,
-    },
-  });
-  if (res.status === 401) {
-    import("./auth").then(({ clearSession }) => clearSession());
-    window.location.href = "/login";
-    throw new Error("Session expired");
-  }
+// ── Generic request helper ────────────────────────────────────────────────────
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE_URL}${path}`;
+  const res = await fetch(url, options);
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ detail: res.statusText }));
-    const detail = error.detail;
-    if (Array.isArray(detail)) {
-      const msg = detail.map((e: any) => `${e.loc?.join(".") ?? ""}: ${e.msg}`).join("; ");
-      throw new Error(msg || `API Error: ${res.status}`);
-    }
-    throw new Error(typeof detail === "string" ? detail : `API Error: ${res.status}`);
-  }
-  return res.json();
-}
-
-async function downloadFile(path: string, filename: string) {
-  const token = getToken();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: {
-      "ngrok-skip-browser-warning": "true",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const blob = await res.blob();
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href     = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-async function pollJob<T>(
-  statusEndpoint: string,
-  maxWaitMs = 10 * 60 * 1000,
-  intervalMs = 4000
-): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    let job: { job_id: string; status: string; result?: T; error?: string };
+    let errorMsg = `HTTP ${res.status}`;
     try {
-      job = await request<{ job_id: string; status: string; result?: T; error?: string }>(statusEndpoint);
-    } catch (e: any) {
-      if (e.message?.includes("404") || e.message?.toLowerCase().includes("not found")) {
-        throw new Error("Job not found — the server may have restarted. Please try again.");
-      }
-      throw e;
-    }
-    if (job.status === "completed" && job.result) return job.result;
-    if (job.status === "failed") throw new Error(job.error || "Job failed.");
+      const body = await res.json();
+      errorMsg = body?.detail ?? body?.error ?? errorMsg;
+    } catch {}
+    throw new Error(errorMsg);
+  }
+  return res.json() as Promise<T>;
+}
+
+// ── Polling helper ────────────────────────────────────────────────────────────
+async function pollJob<T>(
+  statusPath: string,
+  timeoutMs = 10 * 60 * 1000,
+  intervalMs = 3000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await request<{ status: string; result?: T; error?: string }>(statusPath);
+    if (res.status === "completed" && res.result) return res.result;
+    if (res.status === "failed") throw new Error(res.error ?? "Job failed");
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error("Timed out. Please try again.");
+  throw new Error("Polling timed out");
 }
 
-function normProject(raw: any): Project {
-  const META_KEYS = ["category", "description", "stakeholders", "timeline", "budget", "currency"] as const;
-  const meta: Partial<ProjectMeta> = {};
-  let hasMeta = false;
-  for (const key of META_KEYS) {
-    if (raw[key] !== undefined && raw[key] !== null) {
-      (meta as any)[key] = raw[key];
-      hasMeta = true;
-    }
-  }
-  return { ...raw, meta: hasMeta ? (meta as ProjectMeta) : (raw.meta ?? undefined) } as Project;
+// ── Types ─────────────────────────────────────────────────────────────────────
+export interface PricingResult {
+  project_id?: string;
+  rfp_id?: string;
+  summary?: string;
+  line_items?: Array<{
+    item_id: string;
+    description: string;
+    quantity: number;
+    unit: string;
+    suppliers: Array<{
+      name: string;
+      unit_price: number;
+      total_price: number;
+      notes?: string;
+      currency?: string;
+    }>;
+  }>;
+  supplier_totals?: Record<string, number>;
+  recommended_supplier?: string;
+  recommendation_reason?: string;
+  currencies?: Record<string, string>;
 }
 
-// ── API surface ───────────────────────────────────────────────────────────────────────────────
+export interface WorkbookIngestResult {
+  supplier_name: string;
+  project_id: string;
+  total_items: number;
+  total_value: number;
+  currency: string;
+  line_items_preview: Array<{
+    description: string;
+    quantity: number;
+    unit_price: number;
+    total_price: number;
+  }>;
+  status: string;
+}
+
+// ── API surface ───────────────────────────────────────────────────────────────
 export const api = {
 
-  // ── Projects ──────────────────────────────────────────────────────────────────────────
-  listProjects: async () => {
-    const res = await request<{ projects: any[] }>("/projects");
-    return { projects: (res.projects || []).map(normProject) };
-  },
+  // ── Health ──────────────────────────────────────────────────────────────────
+  health: () => request<{ status: string }>("/health"),
 
-  createProject: (name: string) => {
-    const fd = new FormData();
-    fd.append("name", name);
-    return request<Project>("/projects", { method: "POST", body: fd }).then(normProject);
-  },
+  // ── Projects ────────────────────────────────────────────────────────────────
+  listProjects: () =>
+    request<{ projects: Array<{ id: string; name: string; status?: string; created_at?: string }> }>("/projects"),
 
-  getProject: (projectId: string) => request<any>(`/projects/${projectId}`).then(normProject),
-
-  deleteProject: (projectId: string) =>
-    request<{ deleted: boolean }>(`/projects/${projectId}`, { method: "DELETE" }),
-
-  updateProjectMeta: (projectId: string, meta: Partial<ProjectMeta>) =>
-    request<{ project_id: string; updated: Record<string, unknown> }>(`/projects/${projectId}/meta`, {
-      method: "PATCH",
+  createProject: (params: { name: string; description?: string; commodity?: string; deadline?: string }) =>
+    request<{ id: string; name: string; status: string }>("/projects", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(meta),
+      body: JSON.stringify(params),
     }),
 
-  getModuleStates: (projectId: string) => request<ModuleStates>(`/projects/${projectId}/module-states`),
+  getProject: (projectId: string) =>
+    request<{ id: string; name: string; status: string; rfp_id?: string; created_at?: string; deadline?: string }>(`/projects/${projectId}`),
 
-  updateModuleState: (projectId: string, module: keyof ModuleStates, state: ModuleStateValue) =>
-    request<ModuleStates>(`/projects/${projectId}/module-states`, {
+  updateProject: (projectId: string, params: Partial<{ name: string; status: string; deadline: string; description: string }>) =>
+    request<{ updated: boolean }>(`/projects/${projectId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ module, state }),
+      body: JSON.stringify(params),
     }),
 
-  getFeatureFlags: (projectId: string) => request<FeatureFlags>(`/projects/${projectId}/feature-flags`),
+  getProjectActivity: (projectId: string) =>
+    request<{ activities: Array<{ timestamp: string; event: string; user?: string }> }>(`/projects/${projectId}/activity`),
 
-  updateFeatureFlags: (projectId: string, flags: Partial<FeatureFlags>) =>
-    request<FeatureFlags>(`/projects/${projectId}/feature-flags`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(flags),
-    }),
-
-  getAuditLog: (projectId: string) =>
-    request<{ entries: AuditLogEntry[] }>(`/projects/${projectId}/audit-log`),
-
-  /** List all files already stored for a project (RFP + supplier responses). */
-  listProjectFiles: (projectId: string) =>
-    request<{
-      rfp: { filename: string; storage: string } | null;
-      suppliers: Array<{ filename: string; name: string; storage: string }>;
-    }>(`/projects/${projectId}/files`),
+  // ── RFP ─────────────────────────────────────────────────────────────────────
+  listRfps: () =>
+    request<{ rfps: Array<{ id: string; title?: string; project_id?: string; status?: string }> }>("/rfp/list"),
 
   uploadProjectRfp: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
-    return request<{ project_id: string; rfp_filename: string; status: string }>(`/projects/${projectId}/rfp`, { method: "POST", body: fd });
-  },
-
-  removeProjectRfp: (projectId: string) =>
-    request<{ deleted: boolean }>(`/projects/${projectId}/rfp`, { method: "DELETE" }),
-
-  uploadProjectSupplier: (projectId: string, file: File, supplierName?: string) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    if (supplierName) fd.append("supplier_name", supplierName);
-    return request<{ project_id: string; supplier_filename: string; supplier_name: string; status: string }>(
-      `/projects/${projectId}/supplier`, { method: "POST", body: fd }
+    return request<{ rfp_id: string; project_id: string; status: string }>(
+      `/projects/${projectId}/rfp`,
+      { method: "POST", body: fd }
     );
   },
 
-  removeProjectSupplier: (projectId: string, filename: string) =>
-    request<{ deleted: string }>(`/projects/${projectId}/supplier/${encodeURIComponent(filename)}`, { method: "DELETE" }),
+  getRfp: (rfpId: string) =>
+    request<{ rfp_id: string; title?: string; sections?: any[]; status?: string }>(`/rfp/${rfpId}`),
 
-  parseProject: async (projectId: string): Promise<ParseResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>(`/projects/${projectId}/parse`, { method: "POST" });
-    return pollJob<ParseResult>(`/projects/parse-status/${job_id}`, 10 * 60 * 1000);
-  },
+  getRfpCompleteness: (projectId: string) =>
+    request<{ score: number; missing: string[]; present: string[] }>(`/rfp/${projectId}/completeness`),
 
-  analyzeProject: async (projectId: string): Promise<AnalysisResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>(`/projects/${projectId}/analyze`, { method: "POST" });
-    return pollJob<AnalysisResult>(`/technical-analysis/status/${job_id}`, 15 * 60 * 1000);
-  },
+  setRfpQuestionWeights: (rfpId: string, weights: Record<string, number>) =>
+    request<{ updated: boolean }>(`/rfp/${rfpId}/questions/weights`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(weights),
+    }),
 
-  // ── RFP ──────────────────────────────────────────────────────────────────────────────
-  uploadRfp: (file: File) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    return request<{ rfp_id: string; filename: string; status: string }>("/rfp/upload", { method: "POST", body: formData });
-  },
-
-  parseRfp: async (rfp_id: string): Promise<ParseResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>(`/rfp/${rfp_id}/parse`, { method: "POST" });
-    return pollJob<ParseResult>(`/rfp/parse-status/${job_id}`, 10 * 60 * 1000);
-  },
-
-  uploadSupplier: (rfp_id: string, file: File) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    return request<{ rfp_id: string; supplier_id: string; status: string }>(`/rfp/${rfp_id}/supplier`, { method: "POST", body: formData });
-  },
-
-  getRfpStructuredView: (projectId: string) => request<RFPStructuredView>(`/rfp/${projectId}/structured-view`),
-
-  generateRfp: (params: { category: string; scope: string; project_id?: string }) =>
-    request<{ rfp_id: string; content: string }>("/rfp/generate", {
+  generateRfp: (params: {
+    project_id: string;
+    commodity: string;
+    description?: string;
+    requirements?: string[];
+    deadline?: string;
+  }) =>
+    request<{ rfp_id: string; status: string; job_id?: string }>("/rfp/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     }),
 
-  uploadSupplierResponse: (rfp_id: string, file: File) => {
+  getRfpStatus: (rfpId: string) =>
+    request<{ rfp_id: string; status: string; sections?: any[] }>(`/rfp/status/${rfpId}`),
+
+  // ── Suppliers ───────────────────────────────────────────────────────────────
+  listSuppliers: () =>
+    request<{ suppliers: Array<{ id: string; name: string; commodity?: string; status?: string; score?: number }> }>("/suppliers"),
+
+  getSupplier: (id: string) =>
+    request<{ id: string; name: string; commodity?: string; status?: string; score?: number; contacts?: any[] }>(`/suppliers/${id}`),
+
+  addSupplier: (params: { name: string; commodity?: string; email?: string; contact?: string }) =>
+    request<{ id: string; name: string }>("/suppliers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  getSupplierStatus: (id: string) =>
+    request<{ status: string; completeness_pct: number; missing: string[] }>(`/suppliers/${id}/status`),
+
+  getSupplierPerformance: (id: string) =>
+    request<{ score: number; on_time_delivery?: number; quality_rating?: number; responsiveness?: number }>(`/suppliers/${id}/performance`),
+
+  // ── Supplier Responses ──────────────────────────────────────────────────────
+  listResponses: (rfpId?: string) =>
+    request<{ responses: any[] }>(`/responses${rfpId ? `?rfp_id=${rfpId}` : ""}`),
+
+  uploadResponse: (file: File, rfpId: string, supplierName: string) => {
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("rfp_id", rfp_id);
-    return request<{ completeness_pct: number; missing_sections: string[]; clarification_sent: boolean }>(
-      "/rfp/upload-supplier-response", { method: "POST", body: fd }
+    fd.append("rfp_id", rfpId);
+    fd.append("supplier_name", supplierName);
+    return request<{ response_id: string; supplier_name: string; status: string }>(
+      "/responses/upload",
+      { method: "POST", body: fd }
     );
   },
 
-  // ── Technical Analysis ────────────────────────────────────────────────────────────────
-  runAnalysis: async (rfp_id: string): Promise<AnalysisResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>("/technical-analysis/run", {
+  getResponseCompleteness: (responseId: string) =>
+    request<{ completeness_pct: number; missing_sections: string[]; present_sections: string[]; score: number }>(
+      `/responses/${responseId}/completeness`
+    ),
+
+  // ── Analysis ─────────────────────────────────────────────────────────────────
+  runAnalysis: (params: { rfp_id: string; project_id?: string }) =>
+    request<{ job_id: string; status: string }>("/analysis/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rfp_id }),
+      body: JSON.stringify(params),
+    }),
+
+  getAnalysisStatus: (jobId: string) =>
+    request<{ job_id: string; status: string; result?: any; error?: string }>(`/analysis/status/${jobId}`),
+
+  runAnalysisAndPoll: async (params: { rfp_id: string; project_id?: string }) => {
+    const { job_id } = await request<{ job_id: string; status: string }>("/analysis/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
     });
-    return pollJob<AnalysisResult>(`/technical-analysis/status/${job_id}`, 15 * 60 * 1000);
+    return pollJob<any>(`/analysis/status/${job_id}`, 10 * 60 * 1000);
   },
 
-  exportAnalysis(rfpId: string, format: string) {
-    return downloadFile(`/technical-analysis/export/${rfpId}?format=${format}`, `analysis_${rfpId}.${format}`);
-  },
-
-  // ── Chat ──────────────────────────────────────────────────────────────────────────────
-  chat: (
-    messages: Array<{ role: string; content: string }>,
-    rfp_id?: string,
-    analysis_context?: unknown,
-    project_id?: string,
-    actor?: string
-  ) =>
-    request<{ message: string; action: Record<string, unknown> | null }>("/chat/message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, rfp_id, analysis_context, project_id, actor }),
-    }),
-
-  getChatAuditLog: (projectId: string) =>
-    request<{ entries: AuditLogEntry[] }>(`/chat/audit/${projectId}`),
-
-  getChatTools: () => request<{ tools: string[] }>("/chat/tools"),
-
-  // ── Scenarios ────────────────────────────────────────────────────────────────────────
-  runScenario: (params: { rfp_id: string; weights: Record<string, number>; excluded_suppliers: string[] }) =>
+  // ── Scenarios ────────────────────────────────────────────────────────────────
+  createScenario: (params: {
+    project_id: string;
+    weights: Record<string, number>;
+    excluded_suppliers?: string[];
+    name?: string;
+  }) =>
     request<{
-      suppliers: Array<{ name: string; overall_score: number; category_scores: Record<string, number>; rank: number }>;
-      comparison_notes: string[];
-    }>("/scenarios/run", {
+      scenario_id: string;
+      ranked_suppliers: Array<{ name: string; overall_score: number; category_scores: Record<string, number>; rank: number }>;
+      notes: string[];
+    }>("/scenarios/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     }),
 
-  // ── Communications ─────────────────────────────────────────────────────────────────────────
+  listScenarios: (projectId: string) =>
+    request<{ scenarios: Array<{ scenario_id: string; name?: string; created_at?: string; weights?: Record<string, number> }> }>(
+      `/scenarios/list/${projectId}`
+    ),
+
+  analyzeDeadline: (params: { project_id: string; deadline: string }) =>
+    request<{ risk: string; days_remaining: number; recommendation: string }>("/scenarios/analyze-deadline", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  riskAssessment: (params: { project_id: string; scenario_id?: string }) =>
+    request<{ risks: Array<{ supplier: string; risk_level: string; factors: string[] }> }>("/scenarios/risk-assessment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  // ── Award ────────────────────────────────────────────────────────────────────
+  getAwardStatus: (projectId: string) =>
+    request<{
+      status: string;
+      recommended_supplier?: string;
+      approved_by?: string;
+      approved_at?: string;
+      justification?: string;
+      confidence?: number;
+    }>(`/award/status/${projectId}`),
+
+  scoreAward: (params: { project_id: string; weights?: Record<string, number> }) =>
+    request<{ scores: Array<{ supplier: string; score: number }> }>("/award/score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  recommendAward: (params: { project_id: string; justification?: string }) =>
+    request<{ recommended_supplier: string; justification: string; confidence: number }>("/award/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  // ── Communications ───────────────────────────────────────────────────────────
   draftEmail: (params: {
     rfp_id: string;
     supplier_name: string;
     email_type?: string;
     clarification_points?: string[];
   }) =>
-    request<{ subject: string; body: string; supplier_name: string }>("/communications/draft", {
+    request<{ subject: string; body: string; supplier_name: string }>("/communications/draft-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     }),
 
-  sendEmail: (params: {
-    rfp_id: string;
-    supplier_name: string;
-    email_type: string;
-    subject?: string;
-    body?: string;
-  }) =>
-    request<{ sent: boolean; message_id?: string }>("/communications/send", {
+  sendEmail: (params: { rfp_id: string; supplier_name: string; subject: string; body: string }) =>
+    request<{ sent: boolean; timestamp: string }>("/communications/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     }),
 
-  getCommHistory: (projectId: string) =>
-    request<{ emails: Array<{ supplier: string; subject: string; sent_at: string; type: string }> }>(`/communications/history/${projectId}`),
+  listCommunications: (rfpId?: string) =>
+    request<{ messages: any[] }>(`/communications${rfpId ? `?rfp_id=${rfpId}` : ""}`),
 
-  getEmailTemplates: () =>
-    request<{ templates: string[] }>("/communications/templates"),
-
-  // ── Suppliers ─────────────────────────────────────────────────────────────────────────
-  createSupplier: (name: string, email: string, category?: string) =>
-    request<{ supplier_id: string; status: string }>("/suppliers", {
+  // ── Chat / Copilot ───────────────────────────────────────────────────────────
+  chat: (params: { message: string; session_id?: string; project_id?: string; context?: Record<string, unknown> }) =>
+    request<{ response: string; session_id: string; sources?: string[] }>("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, category }),
+      body: JSON.stringify(params),
     }),
 
-  listSuppliers: () => request<{ suppliers: any[] }>("/suppliers"),
+  getChatTools: () => request<{ tools: string[] }>("/chat/tools"),
 
-  getSupplier: (id: string) => request<any>(`/suppliers/${id}`),
-
-  updateSupplier: (id: string, data: { name?: string; email?: string; category?: string; status?: string }) =>
-    request<{ supplier_id: string; updated: Record<string, unknown> }>(`/suppliers/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    }),
-
-  deleteSupplier: (id: string) =>
-    request<{ deleted: boolean }>(`/suppliers/${id}`, { method: "DELETE" }),
-
-  inviteSupplier: (id: string) =>
-    request<{ sent: boolean }>(`/suppliers/${id}/invite`, { method: "POST" }),
-
-  validateSupplierDocs: (id: string, files: File[]) => {
-    const fd = new FormData();
-    files.forEach(f => fd.append("files", f));
-    return request<{ all_docs_present: boolean; completeness_pct: number; missing: string[] }>(
-      `/suppliers/${id}/validate-docs`, { method: "POST", body: fd }
-    );
-  },
-
-  getSupplierStatus: (id: string) =>
-    request<{ status: string; completeness_pct: number; missing: string[] }>(`/suppliers/${id}/status`),
-
-  // ── Drawings ──────────────────────────────────────────────────────────────────────────
+  // ── Drawings ─────────────────────────────────────────────────────────────────
   uploadDrawing: (file: File, projectId?: string) => {
     const fd = new FormData();
     fd.append("file", file);
     if (projectId) fd.append("project_id", projectId);
     return request<{ drawing_id: string; filename: string; url?: string; project_id?: string }>(
-      "/drawings", { method: "POST", body: fd }
+      "/drawings/upload",
+      { method: "POST", body: fd }
     );
   },
 
   listDrawings: (projectId?: string) =>
-    request<{ drawings: any[] }>(`/drawings${projectId ? `?project_id=${projectId}` : ""}`),
+    request<{ drawings: any[] }>(`/drawings/${projectId ?? ""}`),
 
-  attachDrawing: (drawingId: string, lineItemId: string) =>
-    request<{ attached: boolean }>(`/drawings/${drawingId}/attach`, {
+  attachDrawing: (drawingId: string, lineItemId: string, projectId?: string) =>
+    request<{ attached: boolean }>("/drawings/attach", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ line_item_id: lineItemId }),
+      body: JSON.stringify({ drawing_id: drawingId, line_item_id: lineItemId, project_id: projectId }),
     }),
 
-  // ── Pricing Analysis ──────────────────────────────────────────────────────────────────────
+  // ── Pricing Analysis ─────────────────────────────────────────────────────────
   runPricingAnalysis: async (rfpId: string, projectId?: string): Promise<PricingResult> => {
     const { job_id } = await request<{ job_id: string; status: string }>("/pricing-analysis/analyze", {
       method: "POST",
@@ -359,16 +337,15 @@ export const api = {
   getPricingStatus: (jobId: string) =>
     request<{ job_id: string; status: string; result?: unknown; error?: string }>(`/pricing-analysis/status/${jobId}`),
 
-  getPricingResult: (rfpId: string) => request<unknown>(`/pricing-analysis/result/${rfpId}`),
-
-  correctPricing: (rfpId: string, supplierName: string, corrections: unknown[]) =>
-    request<unknown>("/pricing-analysis/correct", {
+  ingestPricingWorkbookSummary: (file: File, supplierName: string, projectId: string): Promise<WorkbookIngestResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("supplier_name", supplierName);
+    fd.append("project_id", projectId);
+    fd.append("source_type", "supplier_response");
+    return request<WorkbookIngestResult>("/pricing-analysis/ingest-workbook", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rfp_id: rfpId, supplier_name: supplierName, corrections }),
-    }),
-
-  exportPricing(rfpId: string, format: "xlsx" | "csv") {
-    return downloadFile(`/pricing-analysis/export/${rfpId}?format=${format}`, `pricing_${rfpId}.${format}`);
+      body: fd,
+    });
   },
 };
