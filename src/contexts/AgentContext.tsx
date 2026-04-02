@@ -41,19 +41,22 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     let active = true;
 
     async function fetchLogs() {
-      // Skip poll entirely if the user is not authenticated yet —
-      // prevents 401 flood in HF Space logs before login completes.
+      // Guard 1: skip if no token in memory yet (pre-login / race condition on mount)
       const token = getToken();
-      if (!token) return;
+      if (!token || token === 'undefined' || token === 'null' || token.trim() === '') return;
 
       try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        };
+        const res = await fetch(`${BACKEND}/agent-logs`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        });
 
-        const res = await fetch(`${BACKEND}/agent-logs`, { headers });
-        if (!res.ok) return; // silently skip on any non-2xx
+        // Guard 2: backend returns [] for anonymous requests (soft auth),
+        // but if a real 401 slips through (e.g. expired token) just skip silently.
+        if (res.status === 401 || res.status === 403) return;
+        if (!res.ok) return;
 
         const data: Array<{
           id: string;
@@ -91,7 +94,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           });
         }
       } catch {
-        // network error — just wait for next poll
+        // network error — silently wait for next poll tick
       }
     }
 
@@ -120,3 +123,4 @@ export function useAgents() {
   if (!ctx) throw new Error('useAgents must be used inside AgentProvider');
   return ctx;
 }
+
