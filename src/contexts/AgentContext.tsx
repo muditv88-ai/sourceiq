@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useCallback, useRef, useState, useEffect } from 'react';
 import type { AgentActivity, AgentStatus } from '@/lib/agents';
+import { getToken } from '@/lib/auth';
 
 const BACKEND = import.meta.env.VITE_API_URL ?? 'https://muditv88-ai-sourceiq-backend.hf.space';
 const POLL_MS = 3000; // poll every 3 seconds
@@ -40,13 +41,19 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     let active = true;
 
     async function fetchLogs() {
+      // Skip poll entirely if the user is not authenticated yet —
+      // prevents 401 flood in HF Space logs before login completes.
+      const token = getToken();
+      if (!token) return;
+
       try {
-        const token = localStorage.getItem('sourceiq_token');
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        };
 
         const res = await fetch(`${BACKEND}/agent-logs`, { headers });
-        if (!res.ok) return; // silently skip on 401/404 until endpoint exists
+        if (!res.ok) return; // silently skip on any non-2xx
 
         const data: Array<{
           id: string;
