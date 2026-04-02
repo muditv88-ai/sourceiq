@@ -67,7 +67,7 @@ const SupplierPricingIngest: React.FC = () => {
     fd.append("file", file);
     fd.append("supplier_name", supplierName || file.name);
     try {
-      const res = await fetch(`${API_BASE}/pricing-analysis/upload-supplier-sheet`, {
+      const res = await fetch(`${API_BASE}/pricing-analysis/ingest`, {
         method: "POST", body: fd,
       });
       if (!res.ok) {
