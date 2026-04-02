@@ -275,3 +275,83 @@ export interface PricingResult {
   market_basket_3:      MarketBasket;
   award_recommendation: AwardRecommendation;
 }
+// ── Pricing Sheet Ingestion (new pipeline) ────────────────────────────────────
+
+export interface PricingCostComponents {
+  api_cost?:  number | null;
+  rm_cost?:   number | null;
+  pkg_cost?:  number | null;
+  mfg_cost?:  number | null;
+  overhead?:  number | null;
+  margin?:    number | null;
+}
+
+export interface PricingLineItemCanonical {
+  item_id:               string;
+  description:           string;
+  strength?:             string;
+  dosage_form?:          string;
+  pack_size?:            string;
+  pack_type?:            string;
+  site?:                 string;
+  market?:               string;
+  annual_volume?:        number;
+  moq?:                  number | null;
+  cost_components:       PricingCostComponents;
+  unit_price?:           number | null;
+  total_unit_cost?:      number | null;
+  annual_contract_value?:number | null;
+  lead_time_weeks?:      number | null;
+  shelf_life_months?:    number | null;
+  storage_condition?:    string;
+  payment_terms?:        string;
+  validity?:             string;
+  supplier_comments?:    string;
+  is_buyer_prefilled:    boolean;
+  is_supplier_filled:    boolean;
+  missing_fields:        string[];
+  extra_fields?:         Record<string, unknown>;
+  confidence:            number;
+}
+
+export interface PricingSheetSummary {
+  total_line_items:   number;
+  filled_by_supplier: number;
+  missing_totals:     number;
+  has_cost_breakdown: boolean;
+  detected_currency:  string;
+  grand_total?:       number | null;
+}
+
+export interface PricingCanonicalSchema {
+  workbook_type:  "rfp_template" | "supplier_response" | "unknown";
+  source_sheet:   string;
+  currency:       string;
+  line_items:     PricingLineItemCanonical[];
+  summary:        PricingSheetSummary;
+  raw_column_map: Record<string, string>;
+}
+
+export type PricingConfidenceTier = "HIGH" | "MEDIUM" | "LOW";
+
+export interface PricingValidationFlag {
+  severity: "error" | "warning" | "info";
+  code:     string;
+  message:  string;
+  item_id?: string;
+}
+
+export interface WorkbookIngestResult {
+  supplier:               string;
+  source_sheet?:          string;
+  confidence_tier:        PricingConfidenceTier;
+  auto_ingest:            boolean;
+  review_needed:          boolean;
+  total_line_items:       number;
+  missing_totals:         number;
+  has_cost_breakdown:     boolean;
+  error?:                 string;
+  validation_flags:       PricingValidationFlag[];
+  schema?:                PricingCanonicalSchema;
+  sheet_classifications?: Record<string, { is_pricing: boolean; confidence: number }>;
+}
