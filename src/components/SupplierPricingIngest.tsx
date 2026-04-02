@@ -4,10 +4,8 @@ import {
   Loader2, ChevronDown, ChevronUp, ShieldCheck, ShieldAlert, ShieldX,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { pricingStore } from "@/lib/pricingStore";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { pricingStore } from "@/lib/pricingStore";
 
 interface Diagnostics {
   file_name: string;
@@ -47,14 +45,17 @@ const ConfidencePill: React.FC<{ level: "high" | "medium" | "low" }> = ({ level 
   );
 };
 
-interface Props { onCommit?: () => void; }
+interface Props {
+  projectId?: string;
+  onCommit?: (rows: Record<string, unknown>[]) => void;
+}
 
-const SupplierPricingIngest: React.FC<Props> = ({ onCommit }) => {
+const SupplierPricingIngest: React.FC<Props> = ({ projectId: propProjectId, onCommit }) => {
   const [stage, setStage]               = useState<Stage>("idle");
   const [dragOver, setDragOver]         = useState(false);
   const [errorMsg, setErrorMsg]         = useState("");
   const [supplierName, setSupplierName] = useState("");
-  const [projectId, setProjectId]       = useState("");
+  const [projectId, setProjectId]       = useState(propProjectId ?? "");
   const [response, setResponse]         = useState<UploadResponse | null>(null);
   const [showSample, setShowSample]     = useState(false);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -118,8 +119,7 @@ const SupplierPricingIngest: React.FC<Props> = ({ onCommit }) => {
       }
       const data = await res.json();
       setConfirmedCount(data.line_items_committed ?? response.diagnostics.accepted_line_items);
-      if (data.rows) pricingStore.setResult(data.project_id ?? "unassigned", { rows: data.rows });
-      onCommit?.();
+      onCommit?.(data.rows ?? []);
       setStage("done");
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : "Confirm failed");
@@ -130,7 +130,7 @@ const SupplierPricingIngest: React.FC<Props> = ({ onCommit }) => {
   const reset = () => {
     setStage("idle"); setResponse(null); setErrorMsg("");
     setShowSample(false); setShowExcluded(false);
-    setSupplierName(""); setProjectId("");
+    setSupplierName(""); setProjectId(propProjectId ?? "");
   };
 
   const d = response?.diagnostics;
