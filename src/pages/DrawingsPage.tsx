@@ -1,197 +1,226 @@
-import { useState, useRef } from "react";
-import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card";
+import { useState, useEffect, useRef } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { toast } from "@/hooks/use-toast";
+import { useAgents } from "@/contexts/AgentContext";
 import {
-  FileImage, Upload, Trash2, Loader2, Link2, Eye, FolderOpen,
+  Upload, FileImage, Link2, Loader2, FolderOpen,
+  ChevronRight, CheckCircle2, AlertCircle, Trash2,
 } from "lucide-react";
 
-interface Drawing {
-  id: string;
-  filename: string;
-  type: string;
-  project_id?: string;
-  line_item_id?: string;
-  url?: string;
-  uploaded_at: string;
-}
-
-const DEMO: Drawing[] = [
-  { id: "d1", filename: "HVAC_Layout_Floor1.pdf",   type: "pdf",  project_id: "proj-001", uploaded_at: new Date(Date.now() - 2*86400000).toISOString() },
-  { id: "d2", filename: "Electrical_Panel_DWG.dwg", type: "dwg",  project_id: "proj-001", uploaded_at: new Date(Date.now() - 86400000).toISOString() },
-  { id: "d3", filename: "Site_Plan_Overview.png",   type: "png",  project_id: "proj-001", uploaded_at: new Date().toISOString() },
-];
-
-const TYPE_COLORS: Record<string, string> = {
-  pdf:  "bg-red-100 text-red-700",
-  dwg:  "bg-blue-100 text-blue-700",
-  dxf:  "bg-purple-100 text-purple-700",
-  png:  "bg-green-100 text-green-700",
-  svg:  "bg-teal-100 text-teal-700",
-  tiff: "bg-orange-100 text-orange-700",
-};
-
 export default function DrawingsPage() {
-  const [drawings, setDrawings] = useState<Drawing[]>(DEMO);
-  const [uploading, setUploading] = useState(false);
-  const [attachTarget, setAttachTarget] = useState({ drawingId: "", lineItemId: "" });
-  const [attaching, setAttaching] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const { pushActivity } = useAgents();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleUpload(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    setUploading(true);
+  const [projects, setProjects]           = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedProject, setSelectedProject] = useState("");
+  const [loadingProjects, setLoadingProjects] = useState(true);
+
+  const [drawings, setDrawings]           = useState<any[]>([]);
+  const [loadingDrawings, setLoadingDrawings] = useState(false);
+
+  const [uploading, setUploading]         = useState(false);
+  const [uploadError, setUploadError]     = useState("");
+  const [uploadSuccess, setUploadSuccess] = useState("");
+
+  const [attachingId, setAttachingId]     = useState<string | null>(null);
+  const [lineItemInputs, setLineItemInputs] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    api.listProjects()
+      .then(r => setProjects((r.projects ?? []).map((p: any) => ({ id: p.id, name: p.name }))))
+      .catch(() => {})
+      .finally(() => setLoadingProjects(false));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProject) return;
+    setLoadingDrawings(true);
+    api.listDrawings(selectedProject)
+      .then(r => setDrawings(r.drawings ?? []))
+      .catch(() => setDrawings([]))
+      .finally(() => setLoadingDrawings(false));
+  }, [selectedProject]);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !selectedProject) return;
+    setUploading(true); setUploadError(""); setUploadSuccess("");
     try {
-      for (const file of Array.from(files)) {
-        const res = await api.uploadDrawing(file);
-        setDrawings(prev => [{
-          id: res.drawing_id ?? Date.now().toString(),
-          filename: file.name,
-          type: file.name.split(".").pop()?.toLowerCase() ?? "file",
-          project_id: res.project_id,
-          url: res.url,
-          uploaded_at: new Date().toISOString(),
-        }, ...prev]);
-      }
-      toast({ title: "Drawing(s) uploaded", description: `${files.length} file(s) stored` });
-    } catch {
-      // Graceful fallback
-      for (const file of Array.from(files)) {
-        setDrawings(prev => [{
-          id: Date.now().toString() + Math.random(),
-          filename: file.name,
-          type: file.name.split(".").pop()?.toLowerCase() ?? "file",
-          uploaded_at: new Date().toISOString(),
-        }, ...prev]);
-      }
-      toast({ title: "Uploaded (local)", description: "Backend not reachable — shown locally only." });
+      const r = await api.uploadDrawing(file, selectedProject);
+      setDrawings(prev => [...prev, r]);
+      setUploadSuccess(`"${file.name}" uploaded successfully.`);
+      pushActivity({ agentId: "drawings", status: "complete", message: `Drawing ${file.name} uploaded` });
+    } catch (e: any) {
+      setUploadError(e?.message ?? "Upload failed.");
     } finally {
       setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
-  async function handleAttach() {
-    if (!attachTarget.drawingId || !attachTarget.lineItemId) return;
-    setAttaching(true);
+  async function handleAttach(drawingId: string) {
+    const lineItemId = lineItemInputs[drawingId];
+    if (!lineItemId) return;
+    setAttachingId(drawingId);
     try {
-      await api.attachDrawing(attachTarget.drawingId, attachTarget.lineItemId);
-      toast({ title: "Drawing attached", description: `Linked to line item ${attachTarget.lineItemId}` });
-      setAttachTarget({ drawingId: "", lineItemId: "" });
-    } catch {
-      toast({ title: "Attached (local)", description: "Backend not reachable — shown locally only." });
-    } finally {
-      setAttaching(false);
-    }
+      await api.attachDrawing(drawingId, lineItemId, selectedProject);
+      setDrawings(prev =>
+        prev.map(d => d.drawing_id === drawingId ? { ...d, attached_to: lineItemId } : d)
+      );
+      setLineItemInputs(prev => ({ ...prev, [drawingId]: "" }));
+    } catch (e: any) {
+      alert(e?.message ?? "Attach failed.");
+    } finally { setAttachingId(null); }
   }
 
-  function handleRemove(id: string) {
-    setDrawings(prev => prev.filter(d => d.id !== id));
-    toast({ title: "Removed", description: "Drawing removed from list" });
+  // ── Project picker ──────────────────────────────────────────────────────────
+  if (!selectedProject) {
+    return (
+      <div className="max-w-xl mx-auto mt-16 space-y-6">
+        <div className="text-center space-y-1">
+          <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-primary/10 flex items-center justify-center">
+            <FileImage className="h-7 w-7 text-primary" />
+          </div>
+          <h1 className="text-xl font-bold">Drawings & Attachments</h1>
+          <p className="text-muted-foreground text-sm">
+            Upload technical drawings and attach them to RFP BOM line items.
+          </p>
+        </div>
+        <Card>
+          <CardHeader><CardTitle className="text-base">Select Project</CardTitle></CardHeader>
+          <CardContent>
+            {loadingProjects ? (
+              <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+              </div>
+            ) : projects.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <FolderOpen className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                <p className="text-sm">No projects found.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {projects.map(p => (
+                  <button key={p.id} onClick={() => setSelectedProject(p.id)}
+                    className="w-full text-left p-3 rounded-lg border hover:bg-muted transition-colors flex items-center justify-between group">
+                    <span className="font-medium text-sm">{p.name}</span>
+                    <ChevronRight className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
+  const projectName = projects.find(p => p.id === selectedProject)?.name ?? selectedProject;
+
+  // ── Main view ───────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Technical Drawings</h1>
-        <p className="text-muted-foreground mt-1">Upload and attach engineering drawings to RFP line items</p>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Drawings & Attachments</h1>
+          <p className="text-muted-foreground mt-1 text-sm">{projectName}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setSelectedProject("")}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+            ← Change project
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.dwg,.dxf,.png,.jpg,.jpeg,.svg"
+            onChange={handleUpload}
+            className="hidden"
+          />
+          <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            {uploading
+              ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Uploading…</>
+              : <><Upload className="h-4 w-4 mr-2" /> Upload Drawing</>}
+          </Button>
+        </div>
       </div>
 
-      {/* Upload zone */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><Upload className="h-4 w-4" /> Upload Drawings</CardTitle>
-          <CardDescription>Supports PDF, DWG, DXF, PNG, SVG, TIFF</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div
-            className="border-2 border-dashed border-border rounded-xl p-10 text-center cursor-pointer hover:bg-muted/30 transition-colors"
-            onClick={() => fileRef.current?.click()}
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); handleUpload(e.dataTransfer.files); }}
-          >
-            {uploading ? (
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
-            ) : (
-              <>
-                <FileImage className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm font-medium">Drop files here or click to browse</p>
-                <p className="text-xs text-muted-foreground mt-1">PDF, DWG, DXF, PNG, SVG, TIFF accepted</p>
-              </>
-            )}
-          </div>
-          <input ref={fileRef} type="file" multiple accept=".pdf,.dwg,.dxf,.png,.svg,.tiff,.tif" className="hidden" onChange={e => handleUpload(e.target.files)} />
-        </CardContent>
-      </Card>
+      {/* Feedback banners */}
+      {uploadError && (
+        <div className="p-3 bg-destructive/10 text-destructive rounded-lg text-sm flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />{uploadError}
+        </div>
+      )}
+      {uploadSuccess && (
+        <div className="p-3 bg-green-50 text-green-700 rounded-lg text-sm flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0" />{uploadSuccess}
+        </div>
+      )}
 
-      {/* Attach to line item */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><Link2 className="h-4 w-4" /> Attach to RFP Line Item</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <select
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              value={attachTarget.drawingId}
-              onChange={e => setAttachTarget(p => ({ ...p, drawingId: e.target.value }))}
-            >
-              <option value="">Select drawing...</option>
-              {drawings.map(d => <option key={d.id} value={d.id}>{d.filename}</option>)}
-            </select>
-            <Input
-              placeholder="Line item ID (e.g. LI-003)"
-              value={attachTarget.lineItemId}
-              onChange={e => setAttachTarget(p => ({ ...p, lineItemId: e.target.value }))}
-            />
-            <Button onClick={handleAttach} disabled={attaching || !attachTarget.drawingId || !attachTarget.lineItemId} className="gap-2">
-              {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-              Attach
-            </Button>
+      {/* Drawing cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {loadingDrawings ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-40 rounded-xl border bg-muted animate-pulse" />
+          ))
+        ) : drawings.length === 0 ? (
+          <div className="col-span-3 text-center py-16 text-muted-foreground">
+            <FileImage className="h-10 w-10 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">No drawings yet</p>
+            <p className="text-sm">Upload a PDF, DWG, DXF, or image to get started.</p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Drawings list */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><FolderOpen className="h-4 w-4" /> Uploaded Drawings ({drawings.length})</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {drawings.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">No drawings uploaded yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {drawings.map(d => (
-                <div key={d.id} className="flex items-center justify-between px-4 py-3 rounded-lg border border-border hover:bg-muted/30 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <FileImage className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">{d.filename}</p>
-                      <p className="text-xs text-muted-foreground">{new Date(d.uploaded_at).toLocaleString()}{d.line_item_id ? ` · Linked: ${d.line_item_id}` : ""}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium uppercase ${TYPE_COLORS[d.type] ?? "bg-muted text-muted-foreground"}`}>{d.type}</span>
-                    {d.url && (
-                      <a href={d.url} target="_blank" rel="noopener noreferrer">
-                        <Button size="icon" variant="ghost" className="h-7 w-7"><Eye className="h-3.5 w-3.5" /></Button>
-                      </a>
-                    )}
-                    <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => handleRemove(d.id)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+        ) : drawings.map((d: any) => (
+          <Card key={d.drawing_id ?? d.filename} className="group">
+            <CardHeader className="pb-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileImage className="h-5 w-5 text-primary flex-shrink-0" />
+                  <CardTitle className="text-sm truncate">{d.filename ?? d.name}</CardTitle>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                {d.attached_to
+                  ? <Badge className="text-xs flex-shrink-0 gap-1">
+                      <CheckCircle2 className="h-3 w-3" />Attached
+                    </Badge>
+                  : <Badge variant="outline" className="text-xs flex-shrink-0">Unattached</Badge>
+                }
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {d.attached_to ? (
+                <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Link2 className="h-3 w-3" /> Line item: <span className="font-medium text-foreground">{d.attached_to}</span>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 border rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    placeholder="Line item ID to attach"
+                    value={lineItemInputs[d.drawing_id] ?? ""}
+                    onChange={e => setLineItemInputs(prev => ({ ...prev, [d.drawing_id]: e.target.value }))}
+                    onKeyDown={e => e.key === "Enter" && handleAttach(d.drawing_id)}
+                  />
+                  <Button size="sm" variant="outline"
+                    disabled={attachingId === d.drawing_id || !lineItemInputs[d.drawing_id]}
+                    onClick={() => handleAttach(d.drawing_id)}>
+                    {attachingId === d.drawing_id
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Link2 className="h-3 w-3" />}
+                  </Button>
+                </div>
+              )}
+              {d.url && (
+                <a href={d.url} target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-primary hover:underline flex items-center gap-1">
+                  View file ↗
+                </a>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

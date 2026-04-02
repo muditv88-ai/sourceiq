@@ -9,7 +9,9 @@ import {
   Trophy, TrendingUp, TrendingDown, ArrowUpDown,
   ChevronDown, ChevronUp, PlusCircle, Info,
   Loader2, FlaskConical, FolderOpen,
+  Ban, TableProperties, Settings2,
 } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
 import { useAgents } from "@/contexts/AgentContext";
 import AgentStreamingThought from "@/components/AgentStreamingThought";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
@@ -38,6 +40,12 @@ export default function AnalysisPage() {
   const [selectedProject, setSelectedProject] = useState("");
   const [running, setRunning]       = useState(false);
   const [runError, setRunError]     = useState("");
+  const [compareMode, setCompareMode]               = useState(false);
+  const [showWeightConfig, setShowWeightConfig]     = useState(false);
+  const [scoreWeights, setScoreWeights]             = useState({ Technical: 40, Pricing: 30, Experience: 20, Support: 10 });
+  const [disqualRules, setDisqualRules]             = useState([]);
+  const [newDisqualField, setNewDisqualField]       = useState("");
+  const [newDisqualThreshold, setNewDisqualThreshold] = useState(50);
 
   // Load projects only when we need the picker
   useEffect(() => {
@@ -363,6 +371,87 @@ export default function AnalysisPage() {
               </tbody>
             </table>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* FM-6.1 Comparison Table */}
+      {compareMode && result && (
+        <Card>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><TableProperties className="h-4 w-4" /> Side-by-Side Comparison</CardTitle></CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead><tr className="border-b">
+                  <th className="text-left py-2 pr-6 font-medium text-muted-foreground">Criterion</th>
+                  {result.suppliers.slice(0,5).map((s) => <th key={s.supplier_name} className="text-right py-2 px-3 font-medium whitespace-nowrap">{s.supplier_name}</th>)}
+                </tr></thead>
+                <tbody>
+                  {Object.keys(result.suppliers[0]?.category_scores?.reduce((a,c) => ({...a,[c.category]:c.weighted_score}),{}) ?? {}).map(cat => {
+                    const scores = result.suppliers.slice(0,5).map(s => s.category_scores?.find(c => c.category === cat)?.weighted_score ?? 0);
+                    const max = Math.max(...scores);
+                    return <tr key={cat} className="border-b hover:bg-muted/30">
+                      <td className="py-2 pr-6 font-medium">{cat}</td>
+                      {result.suppliers.slice(0,5).map(s => { const sc = s.category_scores?.find(c => c.category === cat)?.weighted_score ?? 0; return <td key={s.supplier_name} className="text-right py-2 px-3 tabular-nums"><span className={sc === max ? "font-bold text-green-600" : ""}>{sc.toFixed(1)}</span></td>; })}
+                    </tr>;
+                  })}
+                  <tr className="border-t-2 bg-muted/20">
+                    <td className="py-2 pr-6 font-bold">Overall</td>
+                    {result.suppliers.slice(0,5).map(s => <td key={s.supplier_name} className="text-right py-2 px-3 font-bold tabular-nums">{s.overall_score?.toFixed(1)}</td>)}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* FM-6.2 Weight Configurator */}
+      {showWeightConfig && (
+        <Card>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Settings2 className="h-4 w-4" /> Scoring Weight Configurator</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+              {Object.entries(scoreWeights).map(([cat, w]) => (
+                <div key={cat} className="space-y-2">
+                  <div className="flex justify-between text-xs"><span className="font-medium">{cat}</span><span className="tabular-nums text-muted-foreground">{w}%</span></div>
+                  <Slider value={[w]} min={0} max={100} step={5} onValueChange={([v]) => setScoreWeights(prev => ({...prev, [cat]: v}))} />
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 text-xs text-muted-foreground">
+              Total: <span className={Object.values(scoreWeights).reduce((a,b)=>a+b,0) !== 100 ? "text-destructive font-semibold" : "text-green-600 font-semibold"}>{Object.values(scoreWeights).reduce((a,b)=>a+b,0)}%</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* FM-6.6 Disqualification Rules */}
+      <Card>
+        <CardHeader><CardTitle className="text-sm flex items-center gap-2"><Ban className="h-4 w-4 text-destructive" /> Disqualification Rules</CardTitle><CardDescription className="text-xs">Auto-flag suppliers scoring below thresholds</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            {disqualRules.map((rule, i) => (
+              <div key={i} className="flex items-center gap-2 p-2 bg-destructive/5 rounded border border-destructive/20 text-sm">
+                <Ban className="h-3 w-3 text-destructive flex-shrink-0" />
+                <span className="flex-1">{rule.field} below <strong>{rule.threshold}</strong></span>
+                <button onClick={() => setDisqualRules(prev => prev.filter((_,j) => j !== i))} className="text-destructive text-xs hover:opacity-70">Remove</button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input className="flex-1 border rounded px-2 py-1 text-xs" placeholder="Category (e.g. Technical)" value={newDisqualField} onChange={e => setNewDisqualField(e.target.value)} />
+            <input type="number" min={0} max={10} className="w-16 border rounded px-2 py-1 text-xs" value={newDisqualThreshold} onChange={e => setNewDisqualThreshold(Number(e.target.value))} />
+            <button className="px-3 py-1 border rounded text-xs hover:bg-muted" onClick={() => { if(newDisqualField){ setDisqualRules(p => [...p, {field: newDisqualField, threshold: newDisqualThreshold}]); setNewDisqualField(''); }}}>Add</button>
+          </div>
+          {result && disqualRules.length > 0 && (
+            <div className="space-y-1 pt-1">
+              {result.suppliers.filter(s => disqualRules.some(r => (s.category_scores?.find(c=>c.category===r.field)?.weighted_score ?? 0) < r.threshold)).map(s => (
+                <div key={s.supplier_name} className="flex items-center gap-2 text-sm text-destructive flex-wrap">
+                  <Ban className="h-3 w-3" />{s.supplier_name}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 
