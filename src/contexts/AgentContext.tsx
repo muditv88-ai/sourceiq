@@ -1,5 +1,8 @@
-import React, { createContext, useContext, useCallback, useRef, useState } from 'react';
+import React, { createContext, useContext, useCallback, useRef, useState, useEffect } from 'react';
 import type { AgentActivity, AgentStatus } from '@/lib/agents';
+
+const BACKEND = import.meta.env.VITE_API_URL ?? 'https://muditv88-ai-sourceiq-backend.hf.space';
+const POLL_MS = 3000; // poll every 3 seconds
 
 interface AgentContextValue {
   activities: AgentActivity[];
@@ -15,20 +18,80 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const [activities, setActivities] = useState<AgentActivity[]>([]);
   const [runCount, setRunCount] = useState(0);
   const totalTimeSavedMs = useRef(0);
+  const seenIds = useRef<Set<string>>(new Set());
 
+  // ─── Local push (used by in-app triggers) ───────────────────────────────
   const pushActivity = useCallback((activity: Omit<AgentActivity, 'timestamp'>) => {
     const stamped: AgentActivity = { ...activity, timestamp: Date.now() };
-    setActivities((prev) => {
-      const next = [stamped, ...prev].slice(0, 50); // keep last 50
-      return next;
-    });
+    setActivities((prev) => [stamped, ...prev].slice(0, 50));
     if (activity.status === 'complete') {
       setRunCount((c) => c + 1);
       if (activity.durationMs) totalTimeSavedMs.current += activity.durationMs;
     }
   }, []);
 
-  const clearActivities = useCallback(() => setActivities([]), []);
+  const clearActivities = useCallback(() => {
+    setActivities([]);
+    seenIds.current.clear();
+  }, []);
+
+  // ─── Backend polling for live agent logs ────────────────────────────────
+  useEffect(() => {
+    let active = true;
+
+    async function fetchLogs() {
+      try {
+        const token = localStorage.getItem('sourceiq_token');
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        const res = await fetch(`${BACKEND}/agent-logs`, { headers });
+        if (!res.ok) return; // silently skip on 401/404 until endpoint exists
+
+        const data: Array<{
+          id: string;
+          agent_id: string;
+          status: AgentStatus;
+          message?: string;
+          confidence?: number;
+          duration_ms?: number;
+          timestamp: number;
+        }> = await res.json();
+
+        if (!active) return;
+
+        const fresh = data.filter((e) => !seenIds.current.has(e.id));
+        if (fresh.length === 0) return;
+
+        fresh.forEach((e) => seenIds.current.add(e.id));
+
+        const mapped: AgentActivity[] = fresh.map((e) => ({
+          agentId:    e.agent_id,
+          status:     e.status,
+          message:    e.message,
+          confidence: e.confidence,
+          durationMs: e.duration_ms,
+          timestamp:  e.timestamp,
+        }));
+
+        setActivities((prev) => [...mapped, ...prev].slice(0, 50));
+
+        const completed = mapped.filter((a) => a.status === 'complete');
+        if (completed.length > 0) {
+          setRunCount((c) => c + completed.length);
+          completed.forEach((a) => {
+            if (a.durationMs) totalTimeSavedMs.current += a.durationMs;
+          });
+        }
+      } catch {
+        // network error — just wait for next poll
+      }
+    }
+
+    fetchLogs(); // immediate first fetch
+    const id = setInterval(fetchLogs, POLL_MS);
+    return () => { active = false; clearInterval(id); };
+  }, []);
 
   return (
     <AgentContext.Provider
