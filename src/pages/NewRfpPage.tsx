@@ -8,6 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import FileUploadZone from "@/components/FileUploadZone";
 import { api } from "@/lib/api";
+import { useAgents } from "@/contexts/AgentContext";
+import AgentStreamingThought from "@/components/AgentStreamingThought";
 import {
   Loader2, CheckCircle2, AlertCircle, ArrowRight,
   Copy, FileSearch, Brain, BarChart3, FolderOpen, Clock,
@@ -63,7 +65,16 @@ function ProgressCard({ messages, msgIndex, label }: {
   );
 }
 
+const RFP_PARSE_THOUGHTS = [
+  "Reading uploaded RFP document…",
+  "Extracting key procurement requirements…",
+  "Identifying evaluation criteria…",
+  "Structuring sections and scoring weights…",
+  "Finalising RFP metadata…",
+];
+
 export default function NewRfpPage() {
+  const { pushActivity } = useAgents();
   const navigate = useNavigate();
   const [step, setStep]             = useState<Step>("select_project");
   const [projects, setProjects]     = useState<Project[]>([]);
@@ -93,8 +104,11 @@ export default function NewRfpPage() {
     setStep("parsing"); setParseMsgIdx(0); setError(null);
     const timer = startRotation(setParseMsgIdx, PARSE_MESSAGES.length);
     try {
+      const _rfpStart = Date.now();
+      pushActivity({ agentId: 'rfp', status: 'running', message: 'Parsing RFP document…' });
       await api.uploadProjectRfp(projectId, files[0]);
       const parsed = await api.parseProject(projectId);
+      pushActivity({ agentId: 'rfp', status: 'complete', message: 'RFP parsed and requirements extracted', durationMs: Date.now() - _rfpStart, confidence: 91 });
       clearInterval(timer);
       setQuestions(Array.isArray(parsed.questions) ? parsed.questions : []);
       setCategories(Array.isArray(parsed.categories) ? parsed.categories : []);

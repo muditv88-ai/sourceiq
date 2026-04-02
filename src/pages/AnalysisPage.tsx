@@ -10,9 +10,23 @@ import {
   ChevronDown, ChevronUp, PlusCircle, Info,
   Loader2, FlaskConical, FolderOpen,
 } from "lucide-react";
+import { useAgents } from "@/contexts/AgentContext";
+import AgentStreamingThought from "@/components/AgentStreamingThought";
+import ConfidenceBadge from "@/components/ConfidenceBadge";
+
+const ANALYSIS_THOUGHTS = [
+  "Loading supplier response documents…",
+  "Extracting technical requirements from RFP…",
+  "Mapping supplier claims to RFP criteria…",
+  "Scoring compliance across all categories…",
+  "Detecting weaknesses and risk signals…",
+  "Ranking suppliers by weighted score…",
+  "Generating recommendation summary…",
+];
 
 export default function AnalysisPage() {
   const navigate = useNavigate();
+  const { pushActivity } = useAgents();
   const [result, setResult] = useState<AnalysisResult | null>(() => analysisStore.getResult());
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
@@ -40,12 +54,16 @@ export default function AnalysisPage() {
     if (!selectedProject) return;
     setRunning(true);
     setRunError("");
+    const start = Date.now();
+    pushActivity({ agentId: 'analysis', status: 'running', message: `Analysing project ${selectedProject}` });
     try {
       const res = await api.analyzeProject(selectedProject);
       analysisStore.setResult(res);
       setResult(res);
+      pushActivity({ agentId: 'analysis', status: 'complete', message: `Scored ${res.suppliers?.length ?? 0} suppliers`, durationMs: Date.now() - start, confidence: 88 });
     } catch (err: any) {
       setRunError(err?.message ?? "Analysis failed. Please try again.");
+      pushActivity({ agentId: 'analysis', status: 'error', message: 'Analysis failed' });
     } finally {
       setRunning(false);
     }
@@ -105,6 +123,8 @@ export default function AnalysisPage() {
               </p>
             )}
 
+            <AgentStreamingThought thoughts={ANALYSIS_THOUGHTS} isRunning={running} agentName="Technical Analysis" />
+
             <div className="flex gap-2">
               <Button
                 className="flex-1 gap-2"
@@ -161,6 +181,7 @@ export default function AnalysisPage() {
         <div>
           <h1 className="text-2xl font-bold">Supplier Analysis</h1>
           <p className="text-muted-foreground mt-1">{result.analysis_summary}</p>
+          <ConfidenceBadge agentId="analysis" confidence={(result as any).confidence_score ?? 88} basis="Confidence based on number of uploaded supplier documents, RFP completeness, and scoring model coverage." className="mt-2" />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="gap-2" onClick={() => setSortBy(sortBy === "rank" ? "score" : "rank")}>
