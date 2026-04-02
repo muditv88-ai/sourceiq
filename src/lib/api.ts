@@ -133,11 +133,21 @@ export const api = {
   getAuditLog: (projectId: string) =>
     request<{ entries: AuditLogEntry[] }>(`/projects/${projectId}/audit-log`),
 
+  /** List all files already stored for a project (RFP + supplier responses). */
+  listProjectFiles: (projectId: string) =>
+    request<{
+      rfp: { filename: string; storage: string } | null;
+      suppliers: Array<{ filename: string; name: string; storage: string }>;
+    }>(`/projects/${projectId}/files`),
+
   uploadProjectRfp: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
     return request<{ project_id: string; rfp_filename: string; status: string }>(`/projects/${projectId}/rfp`, { method: "POST", body: fd });
   },
+
+  removeProjectRfp: (projectId: string) =>
+    request<{ deleted: boolean }>(`/projects/${projectId}/rfp`, { method: "DELETE" }),
 
   uploadProjectSupplier: (projectId: string, file: File, supplierName?: string) => {
     const fd = new FormData();

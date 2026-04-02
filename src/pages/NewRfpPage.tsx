@@ -1,6 +1,6 @@
 /**
  * NewRfpPage — Select a project and upload + parse the RFP document.
- * Supplier uploads live in SupplierResponsesPage.
+ * Now detects an already-uploaded RFP and lets the user re-parse or skip.
  */
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -13,10 +13,11 @@ import AgentStreamingThought from "@/components/AgentStreamingThought";
 import {
   Loader2, CheckCircle2, AlertCircle, ArrowRight,
   Copy, FileSearch, Brain, BarChart3, FolderOpen, Clock,
+  FileText, RefreshCw, ArrowRightCircle,
 } from "lucide-react";
 import type { Project, RFPQuestion } from "@/lib/types";
 
-type Step = "select_project" | "upload" | "parsing" | "parsed" | "error";
+type Step = "select_project" | "upload" | "rfp_exists" | "parsing" | "parsed" | "error";
 
 const PARSE_MESSAGES = [
   { icon: FileSearch, text: "Reading document structure...",        sub: "Extracting text from all sheets and sections" },
@@ -65,20 +66,13 @@ function ProgressCard({ messages, msgIndex, label }: {
   );
 }
 
-const RFP_PARSE_THOUGHTS = [
-  "Reading uploaded RFP document…",
-  "Extracting key procurement requirements…",
-  "Identifying evaluation criteria…",
-  "Structuring sections and scoring weights…",
-  "Finalising RFP metadata…",
-];
-
 export default function NewRfpPage() {
   const { pushActivity } = useAgents();
   const navigate = useNavigate();
   const [step, setStep]             = useState<Step>("select_project");
   const [projects, setProjects]     = useState<Project[]>([]);
   const [projectId, setProjectId]   = useState<string | null>(null);
+  const [existingRfp, setExistingRfp] = useState<string | null>(null);
   const [questions, setQuestions]   = useState<RFPQuestion[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [error, setError]           = useState<string | null>(null);
@@ -99,14 +93,28 @@ export default function NewRfpPage() {
     return t;
   };
 
-  const handleRfpUpload = async (files: File[]) => {
-    if (!files[0] || !projectId) return;
+  /** Called when a project card is clicked — checks for existing RFP first */
+  const handleSelectProject = async (p: Project) => {
+    setProjectId(p.project_id);
+    setError(null);
+    if (p.rfp_filename) {
+      // RFP already stored — ask user what to do instead of jumping to upload
+      setExistingRfp(p.rfp_filename);
+      setStep("rfp_exists");
+    } else {
+      setExistingRfp(null);
+      setStep("upload");
+    }
+  };
+
+  const runParse = async (file?: File) => {
+    if (!projectId) return;
     setStep("parsing"); setParseMsgIdx(0); setError(null);
     const timer = startRotation(setParseMsgIdx, PARSE_MESSAGES.length);
     try {
       const _rfpStart = Date.now();
       pushActivity({ agentId: 'rfp', status: 'running', message: 'Parsing RFP document…' });
-      await api.uploadProjectRfp(projectId, files[0]);
+      if (file) await api.uploadProjectRfp(projectId, file);
       const parsed = await api.parseProject(projectId);
       pushActivity({ agentId: 'rfp', status: 'complete', message: 'RFP parsed and requirements extracted', durationMs: Date.now() - _rfpStart, confidence: 91 });
       clearInterval(timer);
@@ -120,7 +128,12 @@ export default function NewRfpPage() {
     }
   };
 
-  const stepIndex = { select_project: 0, upload: 1, parsing: 1, parsed: 1, error: 0 }[step];
+  const handleRfpUpload = async (files: File[]) => {
+    if (!files[0]) return;
+    await runParse(files[0]);
+  };
+
+  const stepIndex = { select_project: 0, upload: 1, rfp_exists: 1, parsing: 1, parsed: 1, error: 0 }[step];
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -159,16 +172,17 @@ export default function NewRfpPage() {
             ) : (
               projects.map(p => (
                 <button key={p.project_id}
-                  onClick={() => { setProjectId(p.project_id); setStep("upload"); }}
+                  onClick={() => handleSelectProject(p)}
                   className="w-full flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/40 transition-colors text-left">
                   <FolderOpen className="h-4 w-4 text-primary shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-medium truncate">{p.name}</p>
                     {p.meta?.category && <p className="text-xs text-muted-foreground">{p.meta.category}</p>}
                   </div>
-                  {p.rfp_filename && (
-                    <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">RFP exists — will replace</span>
-                  )}
+                  {p.rfp_filename
+                    ? <span className="text-xs text-green-700 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> RFP stored</span>
+                    : <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">No RFP yet</span>
+                  }
                 </button>
               ))
             )}
@@ -176,7 +190,44 @@ export default function NewRfpPage() {
         </Card>
       )}
 
-      {/* Step 2: Upload */}
+      {/* Step 1b: RFP already exists — offer re-parse or replace */}
+      {step === "rfp_exists" && (
+        <Card className="border-green-200">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-green-700">
+              <CheckCircle2 className="h-5 w-5" /> RFP Already Uploaded
+            </CardTitle>
+            <CardDescription>
+              This project already has <span className="font-mono font-medium">{existingRfp}</span> stored.
+              You can re-parse it, replace it with a new file, or skip straight to supplier responses.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Button
+              className="w-full gap-2"
+              onClick={() => runParse()}
+            >
+              <RefreshCw className="h-4 w-4" /> Re-parse Existing RFP
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full gap-2"
+              onClick={() => { setExistingRfp(null); setStep("upload"); }}
+            >
+              <FileText className="h-4 w-4" /> Replace with New File
+            </Button>
+            <Button
+              variant="ghost"
+              className="w-full gap-2"
+              onClick={() => navigate("/suppliers")}
+            >
+              <ArrowRightCircle className="h-4 w-4" /> Skip — Go to Supplier Responses
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Step 2: Upload (only when no existing RFP or replacing) */}
       {step === "upload" && (
         <Card>
           <CardHeader>
@@ -207,7 +258,7 @@ export default function NewRfpPage() {
             <div className="flex-1">
               <p className="font-semibold text-destructive">Something went wrong</p>
               <p className="text-sm text-muted-foreground mt-1">{error}</p>
-              <Button variant="outline" className="mt-4" onClick={() => setStep("upload")}>Try Again</Button>
+              <Button variant="outline" className="mt-4" onClick={() => setStep(existingRfp ? "rfp_exists" : "upload")}>Try Again</Button>
             </div>
           </CardContent>
         </Card>
@@ -268,7 +319,7 @@ export default function NewRfpPage() {
           )}
 
           <div className="flex gap-3">
-            <Button variant="outline" onClick={() => { setStep("select_project"); setProjectId(null); }} className="flex-1">
+            <Button variant="outline" onClick={() => { setStep("select_project"); setProjectId(null); setExistingRfp(null); }} className="flex-1">
               Parse Another RFP
             </Button>
             <Button onClick={() => navigate("/suppliers")} className="flex-1 gap-2">

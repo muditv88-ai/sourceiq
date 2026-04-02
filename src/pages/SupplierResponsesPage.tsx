@@ -1,6 +1,7 @@
 /**
- * SupplierResponsesPage — Manage supplier response files for a project
- * and trigger analysis from here.
+ * SupplierResponsesPage — Manage supplier response files for a project.
+ * Now shows already-stored files prominently on load and lets users
+ * proceed to analysis without re-uploading.
  */
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -14,6 +15,7 @@ import type { Project } from "@/lib/types";
 import {
   FolderOpen, Upload, X, Play, CheckCircle2, AlertCircle,
   Loader2, Users, Brain, BarChart3, Clock, DollarSign,
+  ChevronDown, ChevronUp, FileCheck,
 } from "lucide-react";
 
 type ViewState = "select" | "manage";
@@ -39,6 +41,7 @@ export default function SupplierResponsesPage() {
   const [actionMsg, setActionMsg]     = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
+  const [showUpload, setShowUpload]   = useState(false);
 
   useEffect(() => {
     api.listProjects().then(r => setProjects(r.projects || [])).catch(() => {});
@@ -60,13 +63,13 @@ export default function SupplierResponsesPage() {
     return t;
   };
 
-  /** Called whenever a project card is clicked — persists context for PricingPage */
   const selectProject = (p: Project) => {
     setSelected(p);
     setView("manage");
     setActionMsg(null);
     setActionError(null);
-    // Store project context so PricingPage can run without technical analysis
+    // Only show upload zone by default if no suppliers are stored yet
+    setShowUpload((p.suppliers ?? []).length === 0);
     projectStore.setProject(p.project_id, p.project_id, p.name);
   };
 
@@ -85,6 +88,7 @@ export default function SupplierResponsesPage() {
     }
     setActionMsg(`✓ ${files.length} file(s) uploaded`);
     await refreshSelected(selected.project_id);
+    setShowUpload(false);
     setBusy(false);
   };
 
@@ -94,7 +98,6 @@ export default function SupplierResponsesPage() {
     await refreshSelected(selected.project_id);
   };
 
-  /** Full technical analysis → navigate to /analysis */
   const handleAnalyse = async () => {
     if (!selected) return;
     setAnalysing(true); setActionError(null); setAMsgIdx(0);
@@ -112,10 +115,8 @@ export default function SupplierResponsesPage() {
     }
   };
 
-  /** Skip technical analysis — go straight to pricing */
   const handleGoToPricing = () => {
     if (!selected) return;
-    // projectStore already set in selectProject(); navigate directly
     navigate("/pricing");
   };
 
@@ -192,9 +193,17 @@ export default function SupplierResponsesPage() {
                       {p.rfp_filename ?? "No RFP"} · {p.supplier_count ?? 0} supplier{(p.supplier_count ?? 0) !== 1 ? "s" : ""}
                     </p>
                   </div>
-                  {!p.rfp_filename && (
-                    <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Upload RFP first</span>
-                  )}
+                  <div className="flex flex-col items-end gap-1">
+                    {p.rfp_filename
+                      ? <span className="text-xs text-green-700 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1"><FileCheck className="h-3 w-3" /> RFP ready</span>
+                      : <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Upload RFP first</span>
+                    }
+                    {(p.supplier_count ?? 0) > 0 && (
+                      <span className="text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                        {p.supplier_count} supplier{(p.supplier_count ?? 0) !== 1 ? "s" : ""} stored
+                      </span>
+                    )}
+                  </div>
                 </button>
               ))
             )}
@@ -213,17 +222,14 @@ export default function SupplierResponsesPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setView("select")}
-            className="text-muted-foreground hover:text-foreground text-sm"
-          >
+          <button onClick={() => setView("select")} className="text-muted-foreground hover:text-foreground text-sm">
             ← Projects
           </button>
           <span className="text-muted-foreground">/</span>
           <h1 className="text-xl font-bold">{selected?.name}</h1>
         </div>
         <span className="text-xs text-muted-foreground">
-          {suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""}
+          {suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""} stored
         </span>
       </div>
 
@@ -242,47 +248,27 @@ export default function SupplierResponsesPage() {
       {!selected?.rfp_filename && (
         <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          No RFP uploaded for this project yet.{
-            " "}
+          No RFP uploaded for this project yet.{" "}
           <button onClick={() => navigate("/rfp/new")} className="underline ml-1">Upload RFP →</button>
         </div>
       )}
 
-      {/* Upload card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Users className="h-4 w-4" /> Upload Supplier Responses
-          </CardTitle>
-          <CardDescription>
-            Upload one file per supplier. The supplier name will be read from the document automatically.
-            You can also set a custom name per file below.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <FileUploadZone
-            onFileSelect={handleSupplierUpload}
-            multiple
-            accept=".xlsx,.xls,.csv,.pdf,.docx"
-            label="Add Supplier Files"
-            description="Drop one file per supplier"
-          />
-        </CardContent>
-      </Card>
-
-      {/* Existing suppliers */}
+      {/* ── Already stored suppliers (prominent) ──────────────────────────── */}
       {suppliers.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Current Supplier Files</CardTitle>
-            <CardDescription>Names shown are what will appear in the analysis report</CardDescription>
+        <Card className="border-green-200 bg-green-50/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2 text-green-800">
+              <FileCheck className="h-4 w-4" />
+              {suppliers.length} Supplier File{suppliers.length !== 1 ? "s" : ""} Already Stored
+            </CardTitle>
+            <CardDescription>These files are saved and ready for analysis — no need to re-upload.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
             {suppliers.map((s) => {
               const fname = s.path.split(/[\\/]/).pop() ?? s.path;
               return (
-                <div key={s.path} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-muted/40">
-                  <Upload className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <div key={s.path} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white border">
+                  <Upload className="h-3.5 w-3.5 text-green-600 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <input
                       defaultValue={s.name}
@@ -310,18 +296,53 @@ export default function SupplierResponsesPage() {
         </Card>
       )}
 
+      {/* ── Add more suppliers (collapsible when files already exist) ─────── */}
+      <Card>
+        <CardHeader
+          className="pb-3 cursor-pointer select-none"
+          onClick={() => setShowUpload(v => !v)}
+        >
+          <CardTitle className="text-base flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              {suppliers.length > 0 ? "Add More Supplier Files" : "Upload Supplier Responses"}
+            </span>
+            {suppliers.length > 0 && (
+              showUpload
+                ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                : <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            )}
+          </CardTitle>
+          {!showUpload && suppliers.length > 0 && (
+            <CardDescription>Click to expand and add more files</CardDescription>
+          )}
+        </CardHeader>
+        {showUpload && (
+          <CardContent className="space-y-3">
+            <CardDescription>
+              Upload one file per supplier. The supplier name will be read from the document automatically.
+            </CardDescription>
+            <FileUploadZone
+              onFileSelect={handleSupplierUpload}
+              multiple
+              accept=".xlsx,.xls,.csv,.pdf,.docx"
+              label="Add Supplier Files"
+              description="Drop one file per supplier"
+            />
+          </CardContent>
+        )}
+      </Card>
+
       {/* ── Action cards ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-        {/* Card 1: Full technical + pricing analysis */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <Brain className="h-4 w-4" /> Technical Analysis
             </CardTitle>
             <CardDescription>
-              Score all suppliers against RFP criteria, generate rankings and
-              insights, then view pricing.
+              Score all suppliers against RFP criteria, generate rankings and insights.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -341,15 +362,13 @@ export default function SupplierResponsesPage() {
           </CardContent>
         </Card>
 
-        {/* Card 2: Pricing only */}
         <Card className="border-primary/30 bg-primary/5">
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <DollarSign className="h-4 w-4 text-primary" /> Pricing Only
             </CardTitle>
             <CardDescription>
-              Skip technical scoring — go straight to pricing extraction,
-              cost comparison and award scenario modelling.
+              Skip technical scoring — go straight to pricing extraction and cost comparison.
             </CardDescription>
           </CardHeader>
           <CardContent>
