@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import SupplierPricingIngest from "@/components/SupplierPricingIngest";
-import { pricingStore } from "@/lib/pricingStore";
 
 interface PriceRow {
   id: string;
@@ -90,10 +89,19 @@ const PricingPage: React.FC = () => {
         </Card>
       </div>
 
-      <SupplierPricingIngest onCommit={() => {
-        const result = pricingStore.getResult();
-        if (result?.rows) setRows(result.rows);
-      }} />
+      <SupplierPricingIngest
+        projectId="unassigned"
+        onCommit={(newRows) => {
+          setRows(prev => {
+            const merged = [...prev];
+            for (const row of newRows as PriceRow[]) {
+              const idx = merged.findIndex(r => r.lineItem === row.lineItem && r.supplier === row.supplier);
+              if (idx >= 0) merged[idx] = row; else merged.push(row);
+            }
+            return merged;
+          });
+        }}
+      />
 
       {rows.length === 0 ? (
         <Card>
