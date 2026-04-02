@@ -14,6 +14,7 @@ import {
   UserCircle2,
   FileImage,
   Activity,
+  Files,
 } from "lucide-react";
 import ChatWidget from "@/components/ChatWidget";
 import AgentActivityStrip from "@/components/AgentActivityStrip";
@@ -31,6 +32,7 @@ const navItems = [
   { to: "/",               icon: LayoutDashboard,  label: "Dashboard" },
   { to: "/projects",       icon: FolderOpen,        label: "Projects" },
   { to: "/rfp/new",        icon: FilePlus,          label: "New RFP" },
+  { to: "/documents",      icon: Files,             label: "Documents" },
   { to: "/suppliers",      icon: Users,             label: "Suppliers" },
   { to: "/analysis",       icon: BarChart3,         label: "Technical Analysis" },
   { to: "/pricing",        icon: DollarSign,        label: "Pricing Analysis" },
