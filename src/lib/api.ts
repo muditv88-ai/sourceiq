@@ -1,4 +1,4 @@
-import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, PricingResult, RFPStructuredView } from "./types";
+import type { AnalysisResult, AuditLogEntry, FeatureFlags, ModuleStateValue, ModuleStates, ParseResult, Project, ProjectMeta, PricingResult, RFPStructuredView, WorkbookIngestResult } from "./types";
 import { getToken } from "./auth";
 
 const BASE_URL = "/api";
@@ -370,5 +370,47 @@ export const api = {
 
   exportPricing(rfpId: string, format: "xlsx" | "csv") {
     return downloadFile(`/pricing-analysis/export/${rfpId}?format=${format}`, `pricing_${rfpId}.${format}`);
+  },
+
+  // ── Pricing Sheet Ingestion (new pipeline) ─────────────────────────────────
+  /**
+   * Ingest a supplier pricing Excel workbook through the new classifier pipeline.
+   * Returns confidence tier (HIGH/MEDIUM/LOW) + validation flags + canonical schema.
+   */
+  ingestPricingWorkbook: (
+    file: File,
+    supplierName: string,
+    projectId: string,
+    sourceType: "rfp_template" | "supplier_response" = "supplier_response",
+  ): Promise<WorkbookIngestResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("supplier_name", supplierName);
+    fd.append("project_id", projectId);
+    fd.append("source_type", sourceType);
+    return request<WorkbookIngestResult>("/pricing-analysis/ingest-workbook/full", {
+      method: "POST",
+      body: fd,
+    });
+  },
+
+  /**
+   * Ingest workbook — summary only (no full schema in response).
+   * Use for quick completeness checks without full line-item payload.
+   */
+  ingestPricingWorkbookSummary: (
+    file: File,
+    supplierName: string,
+    projectId: string,
+  ): Promise<WorkbookIngestResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("supplier_name", supplierName);
+    fd.append("project_id", projectId);
+    fd.append("source_type", "supplier_response");
+    return request<WorkbookIngestResult>("/pricing-analysis/ingest-workbook", {
+      method: "POST",
+      body: fd,
+    });
   },
 };
