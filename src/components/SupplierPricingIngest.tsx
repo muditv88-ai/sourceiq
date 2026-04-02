@@ -118,7 +118,7 @@ const SupplierPricingIngest: React.FC<Props> = ({ onCommit }) => {
       }
       const data = await res.json();
       setConfirmedCount(data.line_items_committed ?? response.diagnostics.accepted_line_items);
-      if (data.rows) pricingStore.setResult(payload.project_id ?? "unassigned", { rows: data.rows });
+      if (data.rows) pricingStore.setResult(data.project_id ?? "unassigned", { rows: data.rows });
       onCommit?.();
       setStage("done");
     } catch (e: unknown) {
