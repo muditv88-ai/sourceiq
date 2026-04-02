@@ -4,8 +4,10 @@ import {
   Loader2, ChevronDown, ChevronUp, ShieldCheck, ShieldAlert, ShieldX,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { pricingStore } from "@/lib/pricingStore";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { pricingStore } from "@/lib/pricingStore";
 
 interface Diagnostics {
   file_name: string;
@@ -45,7 +47,9 @@ const ConfidencePill: React.FC<{ level: "high" | "medium" | "low" }> = ({ level 
   );
 };
 
-const SupplierPricingIngest: React.FC = () => {
+interface Props { onCommit?: () => void; }
+
+const SupplierPricingIngest: React.FC<Props> = ({ onCommit }) => {
   const [stage, setStage]               = useState<Stage>("idle");
   const [dragOver, setDragOver]         = useState(false);
   const [errorMsg, setErrorMsg]         = useState("");
@@ -114,6 +118,8 @@ const SupplierPricingIngest: React.FC = () => {
       }
       const data = await res.json();
       setConfirmedCount(data.line_items_committed ?? response.diagnostics.accepted_line_items);
+      if (data.rows) pricingStore.setResult(payload.project_id ?? "unassigned", { rows: data.rows });
+      onCommit?.();
       setStage("done");
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : "Confirm failed");
