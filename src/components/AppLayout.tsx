@@ -13,9 +13,15 @@ import {
   LogOut,
   UserCircle2,
   FileImage,
+  Activity,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import ChatWidget from "@/components/ChatWidget";
+import AgentActivityFeed from "@/components/AgentActivityFeed";
 import { useAuth } from "@/contexts/AuthContext";
+import { useAgents } from "@/contexts/AgentContext";
+import { useState } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,12 +40,18 @@ const navItems = [
   { to: "/scenarios",      icon: SlidersHorizontal, label: "Scenarios" },
   { to: "/drawings",       icon: FileImage,         label: "Drawings" },
   { to: "/communications", icon: Mail,              label: "Communications" },
+  { to: "/agent-analytics",icon: Activity,          label: "Agent Analytics" },
 ];
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { activities } = useAgents();
+  const [feedExpanded, setFeedExpanded] = useState(false);
+
+  const runningAgents = activities.filter((a) => a.status === 'running');
+  const hasActivity = activities.length > 0;
 
   function handleLogout() {
     logout();
@@ -75,6 +87,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             >
               <Icon className="h-4 w-4 shrink-0" />
               {label}
+              {label === "Agent Analytics" && hasActivity && (
+                <span className="ml-auto h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+              )}
             </NavLink>
           ))}
         </nav>
@@ -102,6 +117,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </DropdownMenu>
         </div>
 
+        {/* Agent Activity Feed panel */}
+        <div className="mx-3 mb-4 rounded-lg border border-sidebar-accent/30 bg-sidebar-accent/20 overflow-hidden">
+          <button
+            onClick={() => setFeedExpanded((e) => !e)}
+            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-sidebar-foreground/80 hover:text-sidebar-foreground transition-colors"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            <span className="flex-1 text-left">Agent Activity</span>
+            {runningAgents.length > 0 && (
+              <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+            )}
+            {feedExpanded ? (
+              <ChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" />
+            )}
+          </button>
+          {feedExpanded && (
+            <div className="px-2 pb-2">
+              <AgentActivityFeed />
+            </div>
+          )}
+        </div>
+
+        {/* API Status */}
         <div className="p-4 mx-3 mb-4 rounded-lg bg-sidebar-accent/50 text-xs text-sidebar-foreground/60">
           <p className="font-medium text-sidebar-foreground/80 mb-1">API Status</p>
           <div className="flex items-center gap-2">

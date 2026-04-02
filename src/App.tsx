@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { AgentProvider } from "@/contexts/AgentContext";
 import AuthGuard from "@/components/AuthGuard";
 import AppLayout from "@/components/AppLayout";
 import LoginPage from "@/pages/LoginPage";
@@ -17,6 +18,7 @@ import AnalysisPage from "@/pages/AnalysisPage";
 import ScenariosPage from "@/pages/ScenariosPage";
 import CommunicationsPage from "@/pages/CommunicationsPage";
 import PricingPage from "@/pages/PricingPage";
+import AgentAnalyticsPage from "@/pages/AgentAnalyticsPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -29,31 +31,34 @@ const App = () => (
         <Toaster />
         <BrowserRouter>
           <AuthProvider>
-            <Routes>
-              {/* Public */}
-              <Route path="/login" element={<LoginPage />} />
+            <AgentProvider>
+              <Routes>
+                {/* Public */}
+                <Route path="/login" element={<LoginPage />} />
 
-              {/* Protected */}
-              <Route path="/*" element={
-                <AuthGuard>
-                  <AppLayout>
-                    <Routes>
-                      <Route path="/"                  element={<DashboardPage />} />
-                      <Route path="/projects"          element={<ProjectsPage />} />
-                      <Route path="/rfp/new"           element={<NewRfpPage />} />
-                      <Route path="/supplier-responses" element={<SupplierResponsesPage />} />
-                      <Route path="/suppliers"         element={<SuppliersPage />} />
-                      <Route path="/analysis"          element={<AnalysisPage />} />
-                      <Route path="/pricing"           element={<PricingPage />} />
-                      <Route path="/scenarios"         element={<ScenariosPage />} />
-                      <Route path="/drawings"          element={<DrawingsPage />} />
-                      <Route path="/communications"    element={<CommunicationsPage />} />
-                      <Route path="*"                  element={<NotFound />} />
-                    </Routes>
-                  </AppLayout>
-                </AuthGuard>
-              } />
-            </Routes>
+                {/* Protected */}
+                <Route path="/*" element={
+                  <AuthGuard>
+                    <AppLayout>
+                      <Routes>
+                        <Route path="/"                   element={<DashboardPage />} />
+                        <Route path="/projects"           element={<ProjectsPage />} />
+                        <Route path="/rfp/new"            element={<NewRfpPage />} />
+                        <Route path="/supplier-responses" element={<SupplierResponsesPage />} />
+                        <Route path="/suppliers"          element={<SuppliersPage />} />
+                        <Route path="/analysis"           element={<AnalysisPage />} />
+                        <Route path="/pricing"            element={<PricingPage />} />
+                        <Route path="/scenarios"          element={<ScenariosPage />} />
+                        <Route path="/drawings"           element={<DrawingsPage />} />
+                        <Route path="/communications"     element={<CommunicationsPage />} />
+                        <Route path="/agent-analytics"    element={<AgentAnalyticsPage />} />
+                        <Route path="*"                   element={<NotFound />} />
+                      </Routes>
+                    </AppLayout>
+                  </AuthGuard>
+                } />
+              </Routes>
+            </AgentProvider>
           </AuthProvider>
         </BrowserRouter>
       </TooltipProvider>
