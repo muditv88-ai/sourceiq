@@ -248,8 +248,38 @@ export default function PricingPage() {
         }
         const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: f.display_name??f.filename, filename: f.filename, id: f.id }));
         setSupplierFiles(mapped);
-        setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Click to load bids.`);
-        setProjectLoading(false);
+        setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Auto-loading bids…`);
+        // ── auto-ingest all files into staged ──
+        (async () => {
+          for (const f of files) {
+            try {
+              const fId = f.id;
+              const dlEp = `${API}/files/${projectId}/${fId}/download`;
+              const blobRes = await fetch(dlEp, { headers: hdrs2 });
+              if (!blobRes.ok) { console.warn("[auto-ingest] download", blobRes.status, dlEp); continue; }
+              const blob = await blobRes.blob();
+              const fd = new FormData();
+              fd.append("file", blob, f.filename ?? f.display_name ?? "file");
+              const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${tok2}` },
+                body: fd,
+              });
+              if (!res.ok) { console.warn("[auto-ingest] ingest", res.status, await res.text()); continue; }
+              const data = await res.json();
+              const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
+              const sName: string = data.supplier_name ?? f.display_name ?? f.filename ?? "Unknown";
+              if (rows.length) {
+                setStaged(prev => {
+                  const without = prev.filter(s => s.supplierName !== sName);
+                  return [...without, { supplierName: sName, rows, fileName: f.filename ?? f.display_name ?? "", sheetName: "", headerRow: 0 }];
+                });
+              }
+            } catch(e) { console.error("[auto-ingest] FAILED:", e); }
+          }
+          setProjectLoadMsg(`Loaded ${files.length} supplier file${files.length>1?'s':''}.`);
+          setProjectLoading(false);
+        })();
       })
       .catch(() => {
         setProjectLoadMsg("Could not load project files");
