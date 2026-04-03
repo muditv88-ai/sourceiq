@@ -230,12 +230,23 @@ export default function PricingPage() {
     fetch(`${API}/projects/${projectId}/pricing-rows`, { headers: hdrs2 })
       .then(r=>r.ok?r.json():null)
       .then(d => {
-        if (!d?.suppliers?.length) return;
-        const loaded: StagedSupplier[] = d.suppliers.map((s: {supplier_name:string; rows:BidRow[]}) => ({
-          supplierName: s.supplier_name, rows: s.rows ?? [],
-          fileName: s.supplier_name, sheetName: "", headerRow: 0,
-        }));
-        setStaged(loaded);
+        if (!d) return;
+        let loaded: StagedSupplier[] = [];
+        if (Array.isArray(d?.suppliers) && d.suppliers.length) {
+          loaded = d.suppliers.map((s: {supplier_name:string; rows:BidRow[]}) => ({
+            supplierName: s.supplier_name, rows: s.rows ?? [],
+            fileName: s.supplier_name, sheetName: "", headerRow: 0,
+          }));
+        } else if (Array.isArray(d?.rows) && d.rows.length) {
+          const bySup = new Map<string, BidRow[]>();
+          (d.rows as BidRow[]).forEach((r: BidRow) => { const sn=String(r.supplier??"Unknown"); if(!bySup.has(sn))bySup.set(sn,[]); bySup.get(sn)!.push(r); });
+          bySup.forEach((rows,supplierName) => loaded.push({supplierName,rows,fileName:supplierName,sheetName:"",headerRow:0}));
+        } else if (Array.isArray(d) && d.length) {
+          const bySup = new Map<string, BidRow[]>();
+          (d as BidRow[]).forEach((r: BidRow) => { const sn=String(r.supplier??"Unknown"); if(!bySup.has(sn))bySup.set(sn,[]); bySup.get(sn)!.push(r); });
+          bySup.forEach((rows,supplierName) => loaded.push({supplierName,rows,fileName:supplierName,sheetName:"",headerRow:0}));
+        }
+        if (loaded.length) setStaged(loaded);
       }).catch(()=>{});
   }, [projectId]);
 
@@ -304,7 +315,7 @@ export default function PricingPage() {
     if (projectId) {
       await fetch(`${API}/projects/${projectId}/pricing-rows`, {
         method:"POST", headers:{...ah,"Content-Type":"application/json"},
-        body: JSON.stringify({ supplier_name:sName, rows }),
+        body: JSON.stringify({ suppliers: [{ supplier_name:sName, rows: rows.map(r=>({...r,supplier:sName})) }] }),
       }).catch(()=>{});
     }
     setStaged(prev => {
@@ -531,7 +542,7 @@ export default function PricingPage() {
                 <CardHeader className="py-2 px-4 flex-row items-center justify-between">
                   <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
                   {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
-                    await fetch(`${API}/projects/${projectId}/pricing-rows`,{method:"POST",headers:{...ah,"Content-Type":"application/json"},body:JSON.stringify({suppliers:staged.map(s=>({supplier_name:s.supplierName,rows:s.rows}))})}).catch(()=>{});
+                    await fetch(`${API}/projects/${projectId}/pricing-rows`,{method:"POST",headers:{...ah,"Content-Type":"application/json"},body:JSON.stringify({suppliers:staged.map(s=>({supplier_name:s.supplierName,rows:s.rows.map(r=>({...r,supplier:s.supplierName}))}))})}).catch(()=>{});
                     const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
                   }}><Save className="w-3 h-3"/>Save</Button>}
                 </CardHeader>
