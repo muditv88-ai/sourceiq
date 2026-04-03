@@ -207,18 +207,27 @@ export default function PricingPage() {
     : "Pricing agent idle — load supplier bid sheets to begin analysis";
 
   useEffect(() => {
-    fetch(`${API}/projects`, { headers: ah }).then(r=>r.json())
-      .then(d => { const l: Project[] = d.projects??[]; setProjects(l); if (l.length&&!projectId) setProjectId(l[0].id); })
+    const tok = localStorage.getItem("access_token") ?? "";
+    const hdrs = { Authorization: `Bearer ${tok}` };
+    fetch(`${API}/projects`, { headers: hdrs }).then(r=>r.json())
+      .then(d => {
+        // Handle both { projects:[...] } and { items:[...] } and plain array
+        const l: Project[] = Array.isArray(d) ? d : (d.projects ?? d.items ?? []);
+        setProjects(l);
+        if (l.length && !projectId) setProjectId(l[0].id);
+      })
       .catch(()=>{});
   }, []);
 
   useEffect(() => {
     if (!projectId) return;
     setSupplierFiles([]); setSelectedFile(null); setParsed(null); setStaged([]); setPage(1);
-    fetch(`${API}/projects/${projectId}`, { headers: ah }).then(r=>r.json())
+    const tok2 = localStorage.getItem("access_token") ?? "";
+    const hdrs2 = { Authorization: `Bearer ${tok2}` };
+    fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json())
       .then(d => setSupplierFiles((d.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}))))
       .catch(()=>{});
-    fetch(`${API}/projects/${projectId}/pricing-rows`, { headers: ah })
+    fetch(`${API}/projects/${projectId}/pricing-rows`, { headers: hdrs2 })
       .then(r=>r.ok?r.json():null)
       .then(d => {
         if (!d?.suppliers?.length) return;
