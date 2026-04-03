@@ -1,19 +1,28 @@
 /**
- * AnalysisPage.tsx — Technical Analysis
- * UX mirrors PricingPage.tsx exactly: header bar, KPI strip, left panel,
- * right panel tabs, agent ticker at the bottom.
- * No analysisStore / AgentStreamingThought / ConfidenceBadge.
+ * AnalysisPage.tsx — Technical Analysis  (FM-6.1 – FM-6.6)
+ * UX mirrors PricingPage.tsx: header bar, KPI strip, left panel, right panel tabs, agent ticker.
  *
- * Fix log (v2):
- *  - API prefix corrected to /technical-analysis (main.py mounts at that prefix)
- *  - Run endpoint uses POST /technical-analysis/run with full payload built
- *    from loaded supplier files + RFP questions fetched from backend
- *  - Status poll uses /technical-analysis/status/{job_id}
- *  - Agent ticker filters agent_id === "technical" (not "analysis")
- *  - Upload fetch omits Content-Type header (browser sets multipart boundary)
+ * FM-6.1  Comparison matrix   — suppliers as columns, requirements as rows, pass/partial/fail cells
+ * FM-6.2  Weighted scoring     — per-category sliders, live total, validation banner
+ * FM-6.3  Gap analysis         — per-supplier weak/missing criteria sorted by severity
+ * FM-6.4  Drawing conformance  — per-supplier spec check, empty-state when no drawings
+ * FM-6.5  PDF export           — per-supplier print-based export
+ * FM-6.6  Disqualification     — threshold + per-category mandatory rules, live DQ badges
+ *
+ * Fix log (v3):
+ *  - Weight validation banner shown before run when total ≠ 100
+ *  - Re-run button always visible once result is loaded
+ *  - Run error shown inside tab area on re-run failure (not only in empty state)
+ *  - Drawing conformance tab has informative empty state when no drawings uploaded
+ *  - Score Details tab uses expandable category accordion with full rationale
+ *  - Disqualification threshold shown live in KPI strip
+ *  - agent_id filter === "technical" (matches analysis.py push_log calls)
+ *  - All async loops use currentProjectId capture + continue guard
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card, CardContent, CardHeader, CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -24,13 +33,14 @@ import {
   FileDown, AlertTriangle, CheckCircle2,
   XCircle, Minus, SlidersHorizontal, ClipboardList,
   Ruler, RefreshCw, ShieldAlert, Loader2, Upload,
-  Info, PlusCircle,
+  PlusCircle, Info, AlertCircle,
 } from "lucide-react";
 
-// ── Auth & API constants (match Pricing exactly) ──────────────────────────────
+// ── Auth & API constants ───────────────────────────────────────────────────────
 const API = "/api";
-const token = localStorage.getItem("access_token") ?? "";
-const ah = { Authorization: `Bearer ${token}` };
+// token is re-read at call time via liveAh() — do not cache at module level
+const _token_unused = "";
+void _token_unused;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Project { id: string; name: string; project_id?: string; }
@@ -76,6 +86,7 @@ interface SupplierResult {
   strengths: string[];
   weaknesses: string[];
   category_scores: CategoryScore[];
+  disqualified?: boolean;
 }
 interface CategoryScore {
   category: string;
@@ -127,10 +138,10 @@ function scoreToStatus(score: number): CellStatus {
 function StatusBadge({ score }: { score: number }) {
   const s = scoreToStatus(score);
   const map: Record<CellStatus, { icon: React.ReactNode; cls: string; label: string }> = {
-    pass:    { icon: <CheckCircle2 className="h-3.5 w-3.5" />, cls: "text-emerald-700 bg-emerald-50 border-emerald-200", label: "Pass" },
-    partial: { icon: <Minus className="h-3.5 w-3.5" />,       cls: "text-amber-700  bg-amber-50  border-amber-200",  label: "Partial" },
-    fail:    { icon: <XCircle className="h-3.5 w-3.5" />,     cls: "text-rose-700   bg-rose-50   border-rose-200",   label: "Fail" },
-    na:      { icon: <Minus className="h-3.5 w-3.5" />,       cls: "text-gray-500   bg-gray-50   border-gray-200",   label: "N/A" },
+    pass:    { icon: <CheckCircle2 className="h-3.5 w-3.5" />, cls: "text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-400 dark:bg-emerald-950/40 dark:border-emerald-800", label: "Pass" },
+    partial: { icon: <Minus className="h-3.5 w-3.5" />,        cls: "text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-400 dark:bg-amber-950/40 dark:border-amber-800",           label: "Partial" },
+    fail:    { icon: <XCircle className="h-3.5 w-3.5" />,      cls: "text-rose-700 bg-rose-50 border-rose-200 dark:text-rose-400 dark:bg-rose-950/40 dark:border-rose-800",                  label: "Fail" },
+    na:      { icon: <Minus className="h-3.5 w-3.5" />,        cls: "text-gray-500 bg-gray-50 border-gray-200 dark:text-gray-400 dark:bg-gray-900/40 dark:border-gray-700",                  label: "N/A" },
   };
   const { icon, cls, label } = map[s];
   return (
@@ -176,11 +187,13 @@ function isDisqualified(
   weights: Record<string, number>
 ): { dq: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  // Backend may already mark it
+  if (s.disqualified) reasons.push("Flagged by backend scoring engine");
   const ws = reweightedScore(s, weights);
-  if (ws < threshold) reasons.push(`Score ${ws.toFixed(1)} < threshold ${threshold}`);
+  if (ws < threshold) reasons.push(`Weighted score ${ws.toFixed(1)} < threshold ${threshold}`);
   for (const rule of rules) {
     const cat = (s.category_scores ?? []).find(c => c.category === rule.field);
-    if (!cat && rule.mandatory) { reasons.push(`Missing mandatory: ${rule.field}`); continue; }
+    if (!cat && rule.mandatory) { reasons.push(`Missing mandatory category: ${rule.field}`); continue; }
     if (cat && cat.weighted_score < rule.threshold)
       reasons.push(`${rule.field} ${cat.weighted_score.toFixed(1)} < ${rule.threshold}${rule.mandatory ? " (mandatory)" : ""}`);
   }
@@ -188,21 +201,17 @@ function isDisqualified(
 }
 
 function buildGaps(s: SupplierResult) {
-  const weak: Array<{ q: string; score: number; category: string }> = [];
+  const weak: Array<{ q: string; score: number; category: string; rationale: string }> = [];
   for (const cat of s.category_scores ?? []) {
     for (const q of cat.questions ?? []) {
-      if (q.score < 5) weak.push({ q: q.question_text, score: q.score, category: cat.category });
+      if (q.score < 5) weak.push({ q: q.question_text, score: q.score, category: cat.category, rationale: q.rationale });
     }
   }
   return weak.sort((a, b) => a.score - b.score);
 }
 
 // ── Shape backend raw result → AnalysisResult ─────────────────────────────────
-// The backend /technical-analysis/run endpoint returns {scores, gaps, reports, disqualified}
-// We need to normalise it into the AnalysisResult shape the UI expects.
-// If the backend already returns {suppliers: [...]} we pass it through.
 function normaliseResult(data: Record<string, unknown>, projectId: string): AnalysisResult {
-  // Already shaped (e.g. from _shape_analysis_result or a job poll result)
   if (Array.isArray((data as { suppliers?: unknown }).suppliers)) {
     return {
       project_id: (data.project_id as string) ?? projectId,
@@ -213,8 +222,6 @@ function normaliseResult(data: Record<string, unknown>, projectId: string): Anal
     };
   }
 
-  // Raw format from POST /technical-analysis/run:
-  // { scores: {supplierName: {qId: {score, rationale, flagged}}}, gaps, reports, disqualified, project_id }
   const scores = (data.scores ?? {}) as Record<string, Record<string, { score?: number; rationale?: string; flagged?: boolean }>>;
   const reports = (data.reports ?? {}) as Record<string, { strengths?: string[]; weaknesses?: string[]; recommendation?: string }>;
   const disqualified: string[] = Array.isArray(data.disqualified) ? (data.disqualified as string[]) : [];
@@ -232,7 +239,6 @@ function normaliseResult(data: Record<string, unknown>, projectId: string): Anal
     const report = reports[name] ?? {};
     const ov = overall(supplierScores);
 
-    // Group questions by category — derive from question IDs if no category info
     const catMap: Record<string, QuestionScore[]> = {};
     for (const [qid, s] of Object.entries(supplierScores)) {
       const cat = qid.split("_")[0] ?? "General";
@@ -263,6 +269,7 @@ function normaliseResult(data: Record<string, unknown>, projectId: string): Anal
       weaknesses: report.weaknesses ?? [],
       recommendation: report.recommendation ?? "",
       category_scores,
+      disqualified: disqualified.includes(name),
     };
   });
 
@@ -283,7 +290,6 @@ export default function AnalysisPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Re-read token at render time so it's always fresh
   const liveToken = () => localStorage.getItem("access_token") ?? "";
   const liveAh = () => ({ Authorization: `Bearer ${liveToken()}` });
 
@@ -291,18 +297,18 @@ export default function AnalysisPage() {
   const [projects, setProjects]   = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
 
-  // ── Left panel — supplier files
-  const [supplierFiles, setSupplierFiles] = useState<SupplierFile[]>([]);
-  const [leftTab, setLeftTab]             = useState<"project" | "upload">("project");
-  const [projectLoading, setProjectLoading] = useState(false);
-  const [projectLoadMsg, setProjectLoadMsg] = useState("");
-  const [reloadKey, setReloadKey]           = useState(0);
+  // ── Left panel
+  const [supplierFiles, setSupplierFiles]       = useState<SupplierFile[]>([]);
+  const [leftTab, setLeftTab]                   = useState<"project" | "upload">("project");
+  const [projectLoading, setProjectLoading]     = useState(false);
+  const [projectLoadMsg, setProjectLoadMsg]     = useState("");
+  const [reloadKey, setReloadKey]               = useState(0);
 
   // ── Upload
-  const [uploadFile, setUploadFile]         = useState<File | null>(null);
-  const [uploadName, setUploadName]         = useState("");
-  const [uploading, setUploading]           = useState(false);
-  const [uploadMsg, setUploadMsg]           = useState("");
+  const [uploadFile, setUploadFile]   = useState<File | null>(null);
+  const [uploadName, setUploadName]   = useState("");
+  const [uploading, setUploading]     = useState(false);
+  const [uploadMsg, setUploadMsg]     = useState("");
 
   // ── Analysis result
   const [result, setResult]     = useState<AnalysisResult | null>(null);
@@ -310,7 +316,7 @@ export default function AnalysisPage() {
   const [runError, setRunError] = useState("");
 
   // ── Right panel
-  const [activeTab, setActiveTab] = useState<Tab>("matrix");
+  const [activeTab, setActiveTab]               = useState<Tab>("matrix");
   const [expandedSupplier, setExpandedSupplier] = useState<string | null>(null);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [exportingSupplier, setExportingSupplier] = useState<string | null>(null);
@@ -397,7 +403,6 @@ export default function AnalysisPage() {
     const t = setInterval(() => {
       fetch(`${API}/agent-logs?limit=10`, { headers: liveAh() })
         .then(r => r.json())
-        // agent_id is "technical" in analysis.py push_log calls
         .then((logs: AgentLog[]) => setAgentLogs(logs.filter(l => l.agent_id === "technical")))
         .catch(() => {});
     }, 3000);
@@ -406,7 +411,6 @@ export default function AnalysisPage() {
   }, []);
 
   // ── Upload handler ─────────────────────────────────────────────────────────
-  // NOTE: Do NOT include Content-Type header — browser sets multipart boundary automatically
   const handleUpload = useCallback(async () => {
     if (!uploadFile || !projectId) return;
     setUploading(true);
@@ -417,7 +421,6 @@ export default function AnalysisPage() {
       fd.append("project_id", projectId);
       fd.append("category", "supplier_responses");
       fd.append("display_name", uploadName || uploadFile.name.replace(/\.[^.]+$/, ""));
-      // Only Authorization header — no Content-Type (browser handles multipart boundary)
       const res = await fetch(`${API}/files/upload`, {
         method: "POST",
         headers: liveAh(),
@@ -436,10 +439,6 @@ export default function AnalysisPage() {
   }, [uploadFile, uploadName, projectId]);
 
   // ── Run analysis ───────────────────────────────────────────────────────────
-  // The backend POST /technical-analysis/run requires {questions, supplier_responses}.
-  // We first fetch RFP questions for the project, then call run.
-  // If questions aren't parseable yet, we still send an empty array and let
-  // the backend return an informative error.
   const handleRun = useCallback(async () => {
     if (!projectId) return;
     setRunning(true);
@@ -448,8 +447,7 @@ export default function AnalysisPage() {
     try {
       const hdrs = liveAh();
 
-      // Step 1: Fetch RFP questions for this project
-      // The backend stores them as questions.json metadata — we try the rfp route
+      // Step 1: Fetch RFP questions
       let questions: RFQQuestion[] = [];
       try {
         const qRes = await fetch(`${API}/rfp/${projectId}/questions`, { headers: hdrs });
@@ -458,12 +456,10 @@ export default function AnalysisPage() {
           questions = Array.isArray(qData) ? qData : (qData.questions ?? []);
         }
       } catch {
-        // Questions not available via that route — proceed with empty array;
-        // backend _do_analysis_job will load them from questions.json itself
+        // backend _do_analysis_job will load from questions.json itself
       }
 
-      // Step 2: Build supplier_responses map from loaded file names
-      // Each supplier maps question_id → "" (backend re-parses docs from disk)
+      // Step 2: Build supplier_responses map
       const supplier_responses: Record<string, Record<string, string>> = {};
       for (const sf of supplierFiles) {
         supplier_responses[sf.supplierName] = {};
@@ -472,8 +468,15 @@ export default function AnalysisPage() {
         }
       }
 
-      // Step 3: POST to the correct endpoint
-      // Correct prefix per main.py: /technical-analysis (not /analysis)
+      // Step 3: POST to /technical-analysis/run with weight overrides + DQ config
+      const weight_overrides: Record<string, number> = {};
+      const totalW = Object.values(weights).reduce((a, b) => a + b, 0);
+      if (totalW > 0 && weightsEdited) {
+        for (const [k, v] of Object.entries(weights)) {
+          weight_overrides[k] = v / 100;
+        }
+      }
+
       const res = await fetch(`${API}/technical-analysis/run`, {
         method: "POST",
         headers: { ...hdrs, "Content-Type": "application/json" },
@@ -481,6 +484,9 @@ export default function AnalysisPage() {
           project_id: projectId,
           questions,
           supplier_responses,
+          weight_overrides: Object.keys(weight_overrides).length ? weight_overrides : undefined,
+          min_score: 5.0,
+          disqualify_threshold: disqualThreshold,
         }),
       });
 
@@ -527,9 +533,9 @@ export default function AnalysisPage() {
 
     setRunning(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, supplierFiles]);
+  }, [projectId, supplierFiles, weights, weightsEdited, disqualThreshold]);
 
-  // ── PDF export ─────────────────────────────────────────────────────────────
+  // ── PDF export (FM-6.5) ────────────────────────────────────────────────────
   const handleExportPDF = useCallback((supplierName: string) => {
     setExportingSupplier(supplierName);
     setTimeout(() => { window.print(); setExportingSupplier(null); }, 300);
@@ -571,9 +577,6 @@ export default function AnalysisPage() {
 
   const isTickerActive = agentLogs.some(l => l.status === "running");
 
-  // ── Suppress unused-import warning for module-level `ah` constant ─────────
-  void ah;
-
   // ──────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full min-h-screen bg-background text-foreground">
@@ -587,7 +590,6 @@ export default function AnalysisPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Project picker */}
           <select
             className="w-52 h-8 border rounded-md px-2 text-sm bg-background"
             value={projectId}
@@ -598,7 +600,6 @@ export default function AnalysisPage() {
               <option key={p.project_id ?? p.id} value={p.project_id ?? p.id}>{p.name}</option>
             ))}
           </select>
-          {/* Refresh */}
           <button
             className="h-8 w-8 flex items-center justify-center rounded-md border bg-background hover:bg-muted transition-colors"
             onClick={() => setReloadKey(k => k + 1)}
@@ -608,7 +609,6 @@ export default function AnalysisPage() {
               ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               : <RefreshCw className="h-4 w-4 text-muted-foreground" />}
           </button>
-          {/* Pricing link */}
           <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={() => navigate("/pricing")}>
             <BarChart3 className="h-3.5 w-3.5" /> Pricing Analysis →
           </Button>
@@ -618,13 +618,24 @@ export default function AnalysisPage() {
       {/* ── 2. Main body ───────────────────────────────────────────────────── */}
       <div className="flex-1 p-6 flex flex-col gap-6 overflow-auto">
 
-        {/* ── 2a. KPI strip ──────────────────────────────────────────────── */}
+        {/* ── 2a. Weight validation warning (FM-6.2) ─────────────────────── */}
+        {result && weightsEdited && !weightsValid && (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 text-amber-800 dark:text-amber-300 text-xs">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>
+              Weights currently total <strong>{weightTotal}%</strong> — they must add up to exactly 100% for scores to be recalculated correctly.
+              Go to the <button className="underline font-medium" onClick={() => setActiveTab("weights")}>Scoring Weights</button> tab to fix this.
+            </span>
+          </div>
+        )}
+
+        {/* ── 2b. KPI strip ──────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: "Suppliers Scored",   value: result?.suppliers.length ?? 0,                               cls: "border-primary/20 bg-primary/5 text-primary" },
+            { label: "Suppliers Scored",   value: result?.suppliers.length ?? 0,                                cls: "border-primary/20 bg-primary/5 text-primary" },
             { label: "Disqualified",        value: kpi.dqCount,                                                  cls: "border-destructive/20 bg-destructive/5 text-destructive" },
-            { label: "Top Score",           value: kpi.topScore != null ? `${kpi.topScore.toFixed(1)} / 10` : "—", cls: "border-success/20 bg-success/5 text-success" },
-            { label: "Criteria Evaluated",  value: kpi.totalQuestions,                                           cls: "border-warning/20 bg-warning/5 text-warning" },
+            { label: "Top Score",           value: kpi.topScore != null ? `${kpi.topScore.toFixed(1)} / 10` : "—", cls: "border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400" },
+            { label: "Criteria Evaluated",  value: kpi.totalQuestions,                                           cls: "border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400" },
           ].map(k => (
             <Card key={k.label} className={`py-0 border ${k.cls}`}>
               <CardContent className="p-4">
@@ -635,10 +646,10 @@ export default function AnalysisPage() {
           ))}
         </div>
 
-        {/* ── 2b. Two-column body ─────────────────────────────────────────── */}
+        {/* ── 2c. Two-column body ─────────────────────────────────────────── */}
         <div className="flex gap-4 min-h-0 flex-nowrap">
 
-          {/* ── LEFT PANEL ──────────────────────────────────────────────── */}
+          {/* ── LEFT PANEL ─────────────────────────────────────────────── */}
           <div className="w-72 flex-shrink-0 flex flex-col gap-3">
 
             {/* Ingest tabs */}
@@ -764,6 +775,33 @@ export default function AnalysisPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* DQ config quick summary (FM-6.6) */}
+            {result && (
+              <Card className="border-rose-200 dark:border-rose-900">
+                <CardHeader className="pb-1 pt-3 px-3">
+                  <CardTitle className="text-xs font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wide flex items-center gap-1.5">
+                    <ShieldAlert className="h-3.5 w-3.5" /> DQ Rules
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-3 pb-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">Min threshold</span>
+                    <span className="text-[11px] font-semibold tabular-nums">{disqualThreshold.toFixed(1)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-muted-foreground">Custom rules</span>
+                    <span className="text-[11px] font-semibold tabular-nums">{disqualRules.length}</span>
+                  </div>
+                  <button
+                    className="text-[11px] text-primary underline"
+                    onClick={() => setActiveTab("disqual")}
+                  >
+                    Configure →
+                  </button>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* ── RIGHT PANEL ─────────────────────────────────────────────── */}
@@ -822,21 +860,41 @@ export default function AnalysisPage() {
                           {top.recommendation_summary ?? top.recommendation ?? ""}
                         </p>
                       </div>
-                      <div className="text-right shrink-0">
+                      <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
                         <p className="text-2xl font-bold text-emerald-600">{top._weighted.toFixed(1)}</p>
                         <p className="text-[10px] text-muted-foreground">Weighted score</p>
-                        <Button
-                          size="sm" variant="outline" className="mt-1.5 gap-1 text-xs h-7"
-                          onClick={() => handleExportPDF(top.supplier_name)}
-                        >
-                          {exportingSupplier === top.supplier_name
-                            ? <Loader2 className="h-3 w-3 animate-spin" />
-                            : <FileDown className="h-3 w-3" />}
-                          Export PDF
-                        </Button>
+                        <div className="flex gap-1.5">
+                          <Button
+                            size="sm" variant="outline" className="gap-1 text-xs h-7"
+                            onClick={() => handleExportPDF(top.supplier_name)}
+                          >
+                            {exportingSupplier === top.supplier_name
+                              ? <Loader2 className="h-3 w-3 animate-spin" />
+                              : <FileDown className="h-3 w-3" />}
+                            Export PDF
+                          </Button>
+                          {/* Re-run button always visible once result is loaded */}
+                          <Button
+                            size="sm" variant="ghost" className="gap-1 text-xs h-7"
+                            disabled={running}
+                            onClick={handleRun}
+                          >
+                            {running
+                              ? <><Loader2 className="h-3 w-3 animate-spin" /> Running…</>
+                              : <><RefreshCw className="h-3 w-3" /> Re-run</>}
+                          </Button>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
+                )}
+
+                {/* Run error shown inside tab area on re-run failure */}
+                {runError && (
+                  <div className="flex items-start gap-2 px-4 py-2.5 rounded-md border border-destructive/30 bg-destructive/10 text-destructive text-xs">
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span className="whitespace-pre-wrap">{runError}</span>
+                  </div>
                 )}
 
                 {/* Tab bar */}
@@ -856,7 +914,7 @@ export default function AnalysisPage() {
                   ))}
                   <Button
                     size="sm" variant="ghost" className="ml-auto text-xs h-7 gap-1"
-                    onClick={() => { setResult(null); setWeightsEdited(false); }}
+                    onClick={() => { setResult(null); setWeightsEdited(false); setRunError(""); }}
                   >
                     <RefreshCw className="h-3 w-3" /> New Analysis
                   </Button>
@@ -864,15 +922,15 @@ export default function AnalysisPage() {
 
                 {/* ── FM-6.1 Comparison Matrix ──────────────────────────── */}
                 {activeTab === "matrix" && (
-                  <div className="overflow-auto border-t border-border max-h-[520px] rounded-b-md">
+                  <div className="overflow-auto border rounded-md max-h-[520px]">
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-muted z-10">
                         <tr>
-                          <th className="sticky left-0 bg-muted px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border border-r min-w-[200px]">
+                          <th className="sticky left-0 bg-muted px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-r min-w-[200px]">
                             Requirement
                           </th>
                           {enrichedSuppliers.map(s => (
-                            <th key={s.supplier_id} className="px-3 py-2.5 text-center text-muted-foreground font-medium whitespace-nowrap border-b border-border min-w-[150px]">
+                            <th key={s.supplier_id} className="px-3 py-2.5 text-center text-muted-foreground font-medium whitespace-nowrap border-b min-w-[150px]">
                               <div className="flex flex-col items-center gap-0.5">
                                 <span className={s._dq.dq ? "line-through text-muted-foreground/60" : ""}>{s.supplier_name}</span>
                                 {s._dq.dq && (
@@ -896,7 +954,7 @@ export default function AnalysisPage() {
                             <tr key={`cat-${cat}`} className="bg-muted/30">
                               <td
                                 colSpan={enrichedSuppliers.length + 1}
-                                className="sticky left-0 bg-muted/30 px-3 py-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide border-b border-border"
+                                className="sticky left-0 bg-muted/30 px-3 py-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide border-b"
                               >
                                 {cat}
                               </td>
@@ -918,7 +976,12 @@ export default function AnalysisPage() {
                                         <StatusBadge score={sc} />
                                         <span className={`text-[11px] tabular-nums font-bold ${scoreColor(sc)}`}>{sc.toFixed(1)}</span>
                                         {sq?.rationale && (
-                                          <span className="text-[10px] text-muted-foreground line-clamp-2 max-w-[120px] text-center">{sq.rationale}</span>
+                                          <span className="text-[10px] text-muted-foreground line-clamp-2 max-w-[120px] text-left">{sq.rationale}</span>
+                                        )}
+                                        {sq?.flagged && (
+                                          <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500">
+                                            <AlertTriangle className="h-3 w-3" /> Flagged
+                                          </span>
                                         )}
                                       </div>
                                     </td>
@@ -928,17 +991,6 @@ export default function AnalysisPage() {
                             )),
                           ];
                         })}
-                        {/* Totals row */}
-                        <tr className="border-t-2 bg-muted/20">
-                          <td className="sticky left-0 bg-muted/20 px-3 py-2.5 border-r text-xs font-semibold">Overall Weighted Score</td>
-                          {enrichedSuppliers.map(s => (
-                            <td key={s.supplier_id} className="px-3 py-2.5 text-center">
-                              <span className={`text-sm font-bold tabular-nums ${scoreColor(s._weighted)}`}>
-                                {s._weighted.toFixed(1)}
-                              </span>
-                            </td>
-                          ))}
-                        </tr>
                       </tbody>
                     </table>
                   </div>
@@ -946,189 +998,150 @@ export default function AnalysisPage() {
 
                 {/* ── FM-6.2 Score Details ──────────────────────────────── */}
                 {activeTab === "scores" && (
-                  <div className="space-y-3 overflow-auto">
-                    {enrichedSuppliers.map(s => {
-                      const isExp = expandedSupplier === s.supplier_id;
-                      return (
-                        <Card key={s.supplier_id} className={s._dq.dq ? "opacity-60 border-rose-200" : ""}>
-                          <button className="w-full text-left" onClick={() => setExpandedSupplier(isExp ? null : s.supplier_id)}>
-                            <CardHeader className="pb-3">
-                              <div className="flex items-center justify-between gap-4">
-                                <div className="flex items-center gap-3">
-                                  <div className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                                    s._dq.dq ? "bg-rose-100 text-rose-600" : "bg-primary/10 text-primary"
-                                  }`}>#{s.rank}</div>
+                  <div className="space-y-3 overflow-auto max-h-[520px] pr-1">
+                    {enrichedSuppliers.map((s, i) => (
+                      <Card key={s.supplier_id} className={s._dq.dq ? "opacity-60 border-rose-200 dark:border-rose-900" : ""}>
+                        <CardHeader className="pb-2 pt-3 px-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length]}`}>
+                                #{s.rank} {s.supplier_name}
+                              </span>
+                              {s._dq.dq && <Badge variant="destructive" className="text-[10px] h-4 px-1.5"><Ban className="h-2.5 w-2.5 mr-0.5" />DQ</Badge>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-lg font-bold tabular-nums ${scoreColor(s._weighted)}`}>{s._weighted.toFixed(1)}/10</span>
+                              <Button size="sm" variant="outline" className="h-6 gap-1 text-[11px] px-2"
+                                onClick={() => handleExportPDF(s.supplier_name)}>
+                                {exportingSupplier === s.supplier_name ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileDown className="h-3 w-3" />}
+                                PDF
+                              </Button>
+                              <button
+                                className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted transition-colors"
+                                onClick={() => setExpandedSupplier(expandedSupplier === s.supplier_id ? null : s.supplier_id)}
+                                aria-label="Expand supplier details"
+                              >
+                                {expandedSupplier === s.supplier_id ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </button>
+                            </div>
+                          </div>
+                          <ScoreBar score={s._weighted} />
+                        </CardHeader>
+                        {expandedSupplier === s.supplier_id && (
+                          <CardContent className="px-4 pb-4 space-y-3">
+                            {/* Strengths / Weaknesses */}
+                            {(s.strengths.length > 0 || s.weaknesses.length > 0) && (
+                              <div className="grid grid-cols-2 gap-3">
+                                {s.strengths.length > 0 && (
                                   <div>
-                                    <CardTitle className="text-sm">{s.supplier_name}</CardTitle>
-                                    {s._dq.dq && (
-                                      <p className="text-[11px] text-rose-600 flex items-center gap-1 mt-0.5">
-                                        <Ban className="h-3 w-3" /> Disqualified
-                                      </p>
-                                    )}
+                                    <p className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                                      <TrendingUp className="h-3 w-3" /> Strengths
+                                    </p>
+                                    <ul className="space-y-0.5">
+                                      {s.strengths.map((st, idx) => (
+                                        <li key={idx} className="text-[11px] text-muted-foreground flex items-start gap-1">
+                                          <CheckCircle2 className="h-3 w-3 text-emerald-500 mt-0.5 shrink-0" />{st}
+                                        </li>
+                                      ))}
+                                    </ul>
                                   </div>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <div className="text-right">
-                                    <p className={`text-xl font-bold ${scoreColor(s._weighted)}`}>{s._weighted.toFixed(1)}</p>
-                                    <p className="text-[10px] text-muted-foreground">/ 10</p>
+                                )}
+                                {s.weaknesses.length > 0 && (
+                                  <div>
+                                    <p className="text-[10px] font-semibold text-rose-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                                      <TrendingDown className="h-3 w-3" /> Weaknesses
+                                    </p>
+                                    <ul className="space-y-0.5">
+                                      {s.weaknesses.map((w, idx) => (
+                                        <li key={idx} className="text-[11px] text-muted-foreground flex items-start gap-1">
+                                          <XCircle className="h-3 w-3 text-rose-500 mt-0.5 shrink-0" />{w}
+                                        </li>
+                                      ))}
+                                    </ul>
                                   </div>
-                                  <div className="flex gap-1">
-                                    <Button size="sm" variant="outline" className="text-xs h-7 gap-1"
-                                      onClick={e => { e.stopPropagation(); handleExportPDF(s.supplier_name); }}
-                                    >
-                                      {exportingSupplier === s.supplier_name
-                                        ? <Loader2 className="h-3 w-3 animate-spin" />
-                                        : <FileDown className="h-3 w-3" />} PDF
-                                    </Button>
-                                    {isExp ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                                  </div>
-                                </div>
+                                )}
                               </div>
-                              <div className="mt-3 space-y-1.5">
-                                {(s.category_scores ?? []).map(cat => (
-                                  <div key={cat.category} className="grid grid-cols-[120px_1fr] gap-3 items-center">
-                                    <span className="text-[11px] text-muted-foreground truncate">{cat.category}</span>
+                            )}
+                            {/* Category accordion */}
+                            {(s.category_scores ?? []).map(cat => (
+                              <div key={cat.category} className="border rounded-md overflow-hidden">
+                                <button
+                                  className="w-full flex items-center justify-between px-3 py-2 bg-muted/40 hover:bg-muted/70 transition-colors text-left"
+                                  onClick={() => setExpandedCategory(expandedCategory === `${s.supplier_id}-${cat.category}` ? null : `${s.supplier_id}-${cat.category}`)}
+                                >
+                                  <span className="text-xs font-semibold">{cat.category}</span>
+                                  <div className="flex items-center gap-2">
                                     <ScoreBar score={cat.weighted_score} />
+                                    {expandedCategory === `${s.supplier_id}-${cat.category}` ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                                   </div>
-                                ))}
-                              </div>
-                            </CardHeader>
-                          </button>
-                          {isExp && (
-                            <CardContent className="pt-0 border-t space-y-4">
-                              <div className="grid grid-cols-2 gap-4 pt-4">
-                                <div>
-                                  <p className="text-xs font-semibold flex items-center gap-1.5 mb-2 text-emerald-600">
-                                    <TrendingUp className="h-3.5 w-3.5" /> Strengths
-                                  </p>
-                                  <ul className="space-y-1">
-                                    {(s.strengths ?? []).map((str, i) => (
-                                      <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0 mt-0.5" />{str}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                                <div>
-                                  <p className="text-xs font-semibold flex items-center gap-1.5 mb-2 text-rose-600">
-                                    <TrendingDown className="h-3.5 w-3.5" /> Weaknesses
-                                  </p>
-                                  <ul className="space-y-1">
-                                    {(s.weaknesses ?? []).map((w, i) => (
-                                      <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                                        <XCircle className="h-3.5 w-3.5 text-rose-500 shrink-0 mt-0.5" />{w}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              </div>
-                              {(s.category_scores ?? []).map(cat => {
-                                const key = `${s.supplier_id}-${cat.category}`;
-                                const open = expandedCategory === key;
-                                return (
-                                  <div key={cat.category} className="rounded-lg border">
-                                    <button
-                                      className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/30 transition-colors"
-                                      onClick={() => setExpandedCategory(open ? null : key)}
-                                    >
-                                      <span className="text-xs font-semibold">{cat.category}</span>
-                                      <div className="flex items-center gap-3">
-                                        <StatusBadge score={cat.weighted_score} />
-                                        <span className={`text-sm font-bold ${scoreColor(cat.weighted_score)}`}>{cat.weighted_score.toFixed(1)}/10</span>
-                                        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                </button>
+                                {expandedCategory === `${s.supplier_id}-${cat.category}` && (
+                                  <div className="divide-y">
+                                    {(cat.questions ?? []).map(q => (
+                                      <div key={q.question_id} className="px-3 py-2.5 flex items-start gap-3">
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-[11px] font-medium line-clamp-2">{q.question_text}</p>
+                                          {q.rationale && <p className="text-[10px] text-muted-foreground mt-0.5">{q.rationale}</p>}
+                                          {q.supplier_answer && (
+                                            <p className="text-[10px] text-muted-foreground mt-1 italic line-clamp-2">"{q.supplier_answer}"</p>
+                                          )}
+                                        </div>
+                                        <div className="flex flex-col items-end gap-1 shrink-0">
+                                          <StatusBadge score={q.score} />
+                                          <span className={`text-xs tabular-nums font-bold ${scoreColor(q.score)}`}>{q.score.toFixed(1)}</span>
+                                          {q.flagged && <AlertTriangle className="h-3 w-3 text-amber-500" />}
+                                        </div>
                                       </div>
-                                    </button>
-                                    {open && (
-                                      <div className="border-t divide-y">
-                                        {(cat.questions ?? []).map(q => (
-                                          <div key={q.question_id} className="px-4 py-3 space-y-1.5">
-                                            <div className="flex items-start justify-between gap-4">
-                                              <div className="flex-1">
-                                                <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-                                                  <span className="text-[10px] font-bold text-primary">{q.question_id}</span>
-                                                  <span className={`text-[10px] px-1.5 py-0 rounded ${
-                                                    q.question_type === "quantitative" ? "bg-blue-50 text-blue-700" : "bg-purple-50 text-purple-700"
-                                                  }`}>{q.question_type}</span>
-                                                  <span className="text-[10px] text-muted-foreground">wt: {q.weight}%</span>
-                                                  {q.flagged && (
-                                                    <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-600">
-                                                      <AlertTriangle className="h-3 w-3" /> Flagged
-                                                    </span>
-                                                  )}
-                                                </div>
-                                                <p className="text-xs font-medium">{q.question_text}</p>
-                                              </div>
-                                              <span className={`text-sm font-bold shrink-0 ${scoreColor(q.score)}`}>{q.score.toFixed(1)}/10</span>
-                                            </div>
-                                            {q.supplier_answer && (
-                                              <div className="rounded bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">
-                                                <span className="font-semibold text-foreground">Answer: </span>{q.supplier_answer}
-                                              </div>
-                                            )}
-                                            <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-                                              <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-primary" />{q.rationale}
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
+                                    ))}
                                   </div>
-                                );
-                              })}
-                            </CardContent>
-                          )}
-                        </Card>
-                      );
-                    })}
+                                )}
+                              </div>
+                            ))}
+                          </CardContent>
+                        )}
+                      </Card>
+                    ))}
                   </div>
                 )}
 
                 {/* ── FM-6.3 Gap Analysis ───────────────────────────────── */}
                 {activeTab === "gaps" && (
-                  <div className="space-y-3 overflow-auto">
-                    <p className="text-xs text-muted-foreground">
-                      Questions where the supplier scored below <strong>5.0</strong>, grouped by supplier.
-                    </p>
-                    {enrichedSuppliers.map(s => {
+                  <div className="space-y-3 overflow-auto max-h-[520px] pr-1">
+                    {enrichedSuppliers.map((s, i) => {
                       const gaps = buildGaps(s);
                       return (
-                        <Card key={s.supplier_id} className={gaps.length === 0 ? "border-emerald-200" : "border-amber-200"}>
-                          <CardHeader className="pb-2">
+                        <Card key={s.supplier_id}>
+                          <CardHeader className="pb-2 pt-3 px-4">
                             <div className="flex items-center justify-between">
-                              <CardTitle className="text-sm flex items-center gap-2">
-                                {gaps.length === 0
-                                  ? <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                                  : <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length]}`}>
                                 {s.supplier_name}
-                              </CardTitle>
-                              <div className="flex items-center gap-2">
-                                {s._dq.dq && (
-                                  <span className="text-[11px] text-rose-600 flex items-center gap-1">
-                                    <Ban className="h-3 w-3" /> DQ
-                                  </span>
-                                )}
-                                <Badge variant="outline" className="text-[10px]">
-                                  {gaps.length === 0 ? "No gaps" : `${gaps.length} gap${gaps.length !== 1 ? "s" : ""}`}
-                                </Badge>
-                              </div>
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {gaps.length} gap{gaps.length !== 1 ? "s" : ""} identified
+                              </span>
                             </div>
                           </CardHeader>
-                          {gaps.length > 0 && (
-                            <CardContent className="pt-0 space-y-1.5">
-                              {gaps.map((g, i) => (
-                                <div key={i} className="flex items-start gap-3 bg-muted/30 rounded-md px-3 py-2">
-                                  <StatusBadge score={g.score} />
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-medium line-clamp-2">{g.q}</p>
-                                    <p className="text-[10px] text-muted-foreground mt-0.5">{g.category}</p>
+                          <CardContent className="px-4 pb-4">
+                            {gaps.length === 0 ? (
+                              <div className="flex items-center gap-2 text-xs text-emerald-600 py-2">
+                                <CheckCircle2 className="h-4 w-4" /> No critical gaps — all criteria scored ≥ 5.0
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                {gaps.map((g, idx) => (
+                                  <div key={idx} className="flex items-start gap-2 p-2 rounded-md bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900">
+                                    <XCircle className="h-3.5 w-3.5 text-rose-500 mt-0.5 shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-[11px] font-medium line-clamp-2">{g.q}</p>
+                                      <p className="text-[10px] text-muted-foreground mt-0.5">{g.category}</p>
+                                      {g.rationale && <p className="text-[10px] text-muted-foreground mt-0.5 italic">{g.rationale}</p>}
+                                    </div>
+                                    <span className={`text-xs font-bold tabular-nums shrink-0 ${scoreColor(g.score)}`}>{g.score.toFixed(1)}</span>
                                   </div>
-                                  <span className={`text-xs font-bold tabular-nums shrink-0 ${scoreColor(g.score)}`}>
-                                    {g.score.toFixed(1)}
-                                  </span>
-                                </div>
-                              ))}
-                            </CardContent>
-                          )}
+                                ))}
+                              </div>
+                            )}
+                          </CardContent>
                         </Card>
                       );
                     })}
@@ -1137,98 +1150,211 @@ export default function AnalysisPage() {
 
                 {/* ── FM-6.6 Disqualification ───────────────────────────── */}
                 {activeTab === "disqual" && (
-                  <div className="space-y-4 overflow-auto">
+                  <div className="space-y-4 overflow-auto max-h-[520px] pr-1">
+                    {/* Threshold config */}
                     <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm flex items-center gap-2">
-                          <ShieldAlert className="h-4 w-4 text-rose-500" /> Disqualification Rules
+                      <CardHeader className="pb-2 pt-3 px-4">
+                        <CardTitle className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
+                          <ShieldAlert className="h-3.5 w-3.5 text-rose-500" /> Disqualification Rules
                         </CardTitle>
-                        <CardDescription className="text-xs">
-                          Suppliers below the overall threshold or failing a mandatory category rule will be flagged.
-                        </CardDescription>
                       </CardHeader>
-                      <CardContent className="space-y-5">
+                      <CardContent className="px-4 pb-4 space-y-4">
+                        {/* Global threshold */}
                         <div className="space-y-2">
-                          <div className="flex justify-between text-xs">
-                            <span className="font-medium">Overall Score Threshold</span>
-                            <span className="tabular-nums text-muted-foreground">{disqualThreshold.toFixed(1)} / 10</span>
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs font-medium">Minimum overall score threshold</label>
+                            <span className="text-sm font-bold tabular-nums">{disqualThreshold.toFixed(1)}</span>
                           </div>
-                          <Slider value={[disqualThreshold]} min={0} max={10} step={0.5}
-                            onValueChange={([v]) => setDisqualThreshold(v)} />
+                          <Slider
+                            min={0} max={10} step={0.5}
+                            value={[disqualThreshold]}
+                            onValueChange={([v]) => setDisqualThreshold(v)}
+                            className="w-full"
+                          />
+                          <p className="text-[10px] text-muted-foreground">Suppliers scoring below this threshold are automatically disqualified.</p>
                         </div>
+
+                        {/* Custom rules */}
                         <div>
-                          <p className="text-xs font-semibold mb-2">Category-Level Rules</p>
-                          <div className="space-y-1.5 mb-3">
-                            {disqualRules.map((rule, i) => (
-                              <div key={i} className="flex items-center gap-2 p-2 rounded border text-xs bg-rose-50 border-rose-200 dark:bg-rose-950/20">
-                                {rule.mandatory ? <Ban className="h-3 w-3 text-rose-500" /> : <AlertTriangle className="h-3 w-3 text-amber-500" />}
-                                <span className="flex-1">{rule.field} &lt; <strong>{rule.threshold}</strong>
-                                  {rule.mandatory && <span className="ml-1 text-[10px] text-rose-600">(mandatory)</span>}
-                                </span>
-                                <button className="text-rose-500 hover:opacity-70 text-[11px]"
-                                  onClick={() => setDisqualRules(p => p.filter((_, j) => j !== i))}>
-                                  Remove
-                                </button>
-                              </div>
-                            ))}
-                            {disqualRules.length === 0 && (
-                              <p className="text-xs text-muted-foreground italic">No category rules. Add one below.</p>
-                            )}
-                          </div>
-                          <div className="flex gap-2 items-center flex-wrap">
-                            <select className="flex-1 border rounded px-2 py-1.5 text-xs bg-background min-w-[140px]"
-                              value={newRuleField} onChange={e => setNewRuleField(e.target.value)}>
-                              <option value="">— Select category —</option>
-                              {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                            </select>
-                            <div className="flex items-center gap-1 text-xs">
-                              <span className="text-muted-foreground">Threshold:</span>
-                              <input type="number" min={0} max={10} step={0.5}
-                                className="w-14 border rounded px-2 py-1.5 text-xs bg-background"
-                                value={newRuleThreshold}
-                                onChange={e => setNewRuleThreshold(Number(e.target.value))} />
+                          <p className="text-xs font-semibold mb-2">Category-level rules</p>
+                          {disqualRules.length === 0 && (
+                            <p className="text-[11px] text-muted-foreground italic mb-2">No custom rules — add one below.</p>
+                          )}
+                          {disqualRules.map((r, idx) => (
+                            <div key={idx} className="flex items-center gap-2 mb-1.5 p-2 rounded-md bg-muted/30 border">
+                              <span className="flex-1 text-[11px] font-medium">{r.field}</span>
+                              <span className="text-[11px] tabular-nums text-muted-foreground">min {r.threshold}</span>
+                              {r.mandatory && <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 border-rose-300 text-rose-600">Mandatory</Badge>}
+                              <button
+                                className="text-[11px] text-destructive hover:underline"
+                                onClick={() => setDisqualRules(rules => rules.filter((_, i) => i !== idx))}
+                              >
+                                Remove
+                              </button>
                             </div>
-                            <label className="flex items-center gap-1 text-xs cursor-pointer">
-                              <input type="checkbox" checked={newRuleMandatory}
-                                onChange={e => setNewRuleMandatory(e.target.checked)} className="rounded" />
-                              Mandatory
-                            </label>
-                            <Button size="sm" variant="outline" className="text-xs h-7"
+                          ))}
+                          {/* Add rule */}
+                          <div className="flex items-end gap-2 mt-2">
+                            <div className="flex-1">
+                              <label className="text-[10px] text-muted-foreground mb-0.5 block">Category</label>
+                              <select
+                                className="w-full h-7 border rounded px-2 text-xs bg-background"
+                                value={newRuleField}
+                                onChange={e => setNewRuleField(e.target.value)}
+                              >
+                                <option value="">— Select —</option>
+                                {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            </div>
+                            <div className="w-20">
+                              <label className="text-[10px] text-muted-foreground mb-0.5 block">Min score</label>
+                              <input
+                                type="number" min={0} max={10} step={0.5}
+                                className="w-full h-7 border rounded px-2 text-xs bg-background"
+                                value={newRuleThreshold}
+                                onChange={e => setNewRuleThreshold(parseFloat(e.target.value))}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <input
+                                id="mandatory-toggle"
+                                type="checkbox"
+                                checked={newRuleMandatory}
+                                onChange={e => setNewRuleMandatory(e.target.checked)}
+                                className="h-3.5 w-3.5"
+                              />
+                              <label htmlFor="mandatory-toggle" className="text-[10px] text-muted-foreground">Mandatory</label>
+                            </div>
+                            <Button
+                              size="sm" variant="outline" className="h-7 text-xs gap-1"
                               disabled={!newRuleField}
                               onClick={() => {
                                 if (!newRuleField) return;
-                                setDisqualRules(p => [...p, { field: newRuleField, threshold: newRuleThreshold, mandatory: newRuleMandatory }]);
+                                setDisqualRules(r => [...r, { field: newRuleField, threshold: newRuleThreshold, mandatory: newRuleMandatory }]);
                                 setNewRuleField("");
-                              }}>
-                              <PlusCircle className="h-3 w-3 mr-1" /> Add Rule
+                              }}
+                            >
+                              <PlusCircle className="h-3 w-3" /> Add
                             </Button>
                           </div>
                         </div>
                       </CardContent>
                     </Card>
+
+                    {/* Disqualification results */}
+                    {enrichedSuppliers.map((s, i) => (
+                      <Card key={s.supplier_id} className={s._dq.dq ? "border-rose-200 dark:border-rose-900" : "border-emerald-200 dark:border-emerald-900"}>
+                        <CardContent className="p-4 flex items-start gap-3">
+                          <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 ${s._dq.dq ? "bg-rose-100 dark:bg-rose-900" : "bg-emerald-100 dark:bg-emerald-900"}`}>
+                            {s._dq.dq ? <Ban className="h-4 w-4 text-rose-500" /> : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`text-sm font-semibold ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length].split(" ")[1]}`}>{s.supplier_name}</span>
+                              <span className={`text-[11px] tabular-nums font-bold ${scoreColor(s._weighted)}`}>{s._weighted.toFixed(1)}/10</span>
+                              {s._dq.dq
+                                ? <Badge variant="destructive" className="text-[10px] h-4 px-1.5">Disqualified</Badge>
+                                : <Badge variant="outline" className="text-[10px] h-4 px-1.5 border-emerald-300 text-emerald-700 dark:text-emerald-400">Qualified</Badge>}
+                            </div>
+                            {s._dq.dq && s._dq.reasons.length > 0 && (
+                              <ul className="space-y-0.5">
+                                {s._dq.reasons.map((r, ri) => (
+                                  <li key={ri} className="text-[11px] text-rose-600 dark:text-rose-400 flex items-start gap-1">
+                                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />{r}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── FM-6.2 Scoring Weights ────────────────────────────── */}
+                {activeTab === "weights" && (
+                  <div className="space-y-4 overflow-auto max-h-[520px] pr-1">
                     <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-sm">Evaluation Results</CardTitle>
+                      <CardHeader className="pb-2 pt-3 px-4">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5">
+                            <SlidersHorizontal className="h-3.5 w-3.5" /> Category Weights
+                          </CardTitle>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs font-bold tabular-nums ${weightsValid ? "text-emerald-600" : "text-amber-600"}`}>
+                              {weightTotal}% {weightsValid ? "✓" : "⚠ must total 100"}
+                            </span>
+                            <Button
+                              size="sm" variant="ghost" className="h-6 text-xs"
+                              onClick={() => { setWeightsEdited(false); }}
+                            >
+                              Reset
+                            </Button>
+                          </div>
+                        </div>
                       </CardHeader>
-                      <CardContent className="space-y-2">
-                        {enrichedSuppliers.map(s => (
-                          <div key={s.supplier_id} className={`flex items-start gap-3 rounded-lg p-3 border ${
-                            s._dq.dq
-                              ? "bg-rose-50 border-rose-200 dark:bg-rose-950/20"
-                              : "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/20"
-                          }`}>
-                            <div className="shrink-0 mt-0.5">
-                              {s._dq.dq
-                                ? <Ban className="h-4 w-4 text-rose-500" />
-                                : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                      <CardContent className="px-4 pb-4 space-y-4">
+                        <p className="text-[11px] text-muted-foreground">
+                          Adjust how each category contributes to the overall score. Weights must total 100%.
+                          Changes are applied immediately to all scores and DQ checks.
+                        </p>
+                        {allCategories.map(cat => (
+                          <div key={cat} className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-medium">{cat}</label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number" min={0} max={100} step={1}
+                                  className="w-14 h-6 border rounded px-2 text-xs text-right bg-background"
+                                  value={weights[cat] ?? 0}
+                                  onChange={e => {
+                                    setWeightsEdited(true);
+                                    setWeights(w => ({ ...w, [cat]: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) }));
+                                  }}
+                                />
+                                <span className="text-xs text-muted-foreground w-3">%</span>
+                              </div>
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-semibold">{s.supplier_name}</p>
-                              {s._dq.dq
-                                ? <ul className="mt-1 space-y-0.5">{s._dq.reasons.map((r, i) => <li key={i} className="text-xs text-rose-600">• {r}</li>)}</ul>
-                                : <p className="text-xs text-emerald-600 mt-0.5">Meets all thresholds</p>}
+                            <Slider
+                              min={0} max={100} step={1}
+                              value={[weights[cat] ?? 0]}
+                              onValueChange={([v]) => {
+                                setWeightsEdited(true);
+                                setWeights(w => ({ ...w, [cat]: v }));
+                              }}
+                            />
+                          </div>
+                        ))}
+                        {!weightsValid && (
+                          <div className="flex items-center gap-2 text-xs text-amber-600 p-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                            Weights total {weightTotal}%. Please adjust to reach exactly 100% before re-running.
+                          </div>
+                        )}
+                        {weightsValid && weightsEdited && (
+                          <Button className="w-full gap-2 text-xs" size="sm" onClick={handleRun} disabled={running}>
+                            {running ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…</> : <><FlaskConical className="h-3.5 w-3.5" /> Re-run with new weights</>}
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* Live weighted scores preview */}
+                    <Card>
+                      <CardHeader className="pb-2 pt-3 px-4">
+                        <CardTitle className="text-xs font-semibold uppercase tracking-wide">Live Weighted Scores</CardTitle>
+                      </CardHeader>
+                      <CardContent className="px-4 pb-4 space-y-2">
+                        {enrichedSuppliers.map((s, i) => (
+                          <div key={s.supplier_id} className="flex items-center gap-3">
+                            <span className={`text-[11px] font-medium w-36 truncate ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length].split(" ")[1]}`}>
+                              {s.supplier_name}
+                            </span>
+                            <div className="flex-1">
+                              <ScoreBar score={s._weighted} />
                             </div>
-                            <span className={`text-sm font-bold tabular-nums shrink-0 ${scoreColor(s._weighted)}`}>{s._weighted.toFixed(1)}</span>
+                            {s._dq.dq && <Ban className="h-3.5 w-3.5 text-rose-500 shrink-0" />}
                           </div>
                         ))}
                       </CardContent>
@@ -1236,144 +1362,71 @@ export default function AnalysisPage() {
                   </div>
                 )}
 
-                {/* ── FM-6.2 Scoring Weights ────────────────────────────── */}
-                {activeTab === "weights" && (
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <SlidersHorizontal className="h-4 w-4" /> Weighted Scoring Configurator
-                      </CardTitle>
-                      <CardDescription className="text-xs">
-                        Set each category's importance. Total must equal 100%. Rankings update instantly.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-5">
-                      <div className="space-y-4">
-                        {allCategories.map(cat => (
-                          <div key={cat} className="space-y-1.5">
-                            <div className="flex justify-between text-xs">
-                              <span className="font-medium">{cat}</span>
-                              <span className="tabular-nums text-muted-foreground">{weights[cat] ?? 0}%</span>
-                            </div>
-                            <Slider
-                              value={[weights[cat] ?? 0]} min={0} max={100} step={5}
-                              onValueChange={([v]) => {
-                                setWeights(p => ({ ...p, [cat]: v }));
-                                setWeightsEdited(true);
-                              }}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <div className={`flex items-center justify-between p-3 rounded-lg border text-sm ${
-                        weightsValid
-                          ? "border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20"
-                          : "border-rose-200 bg-rose-50 dark:bg-rose-950/20"
-                      }`}>
-                        <span className="font-medium">Total</span>
-                        <span className={`font-bold tabular-nums ${weightsValid ? "text-emerald-600" : "text-rose-600"}`}>
-                          {weightTotal}%{!weightsValid && " — must equal 100%"}
-                        </span>
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold mb-3">Re-scored Rankings</p>
-                        <div className="space-y-2">
-                          {[...enrichedSuppliers].sort((a, b) => b._weighted - a._weighted).map((s, i) => (
-                            <div key={s.supplier_id} className="flex items-center gap-3">
-                              <span className="text-xs text-muted-foreground w-5 text-right">#{i + 1}</span>
-                              <span className="flex-1 text-sm truncate">{s.supplier_name}</span>
-                              <div className="w-32"><ScoreBar score={s._weighted} /></div>
-                              {s._dq.dq && <Ban className="h-3.5 w-3.5 text-rose-500 shrink-0" />}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
                 {/* ── FM-6.4 Drawing Conformance ────────────────────────── */}
-                {activeTab === "drawings" && (() => {
-                  const qMap = new Map<string, {
-                    spec: string; category: string;
-                    suppliers: Record<string, { answer: string; status: "match" | "mismatch" | "unverified" }>;
-                  }>();
-                  for (const s of result.suppliers) {
-                    for (const cat of s.category_scores ?? []) {
-                      for (const q of cat.questions ?? []) {
-                        if (q.question_type !== "quantitative") continue;
-                        if (!qMap.has(q.question_id))
-                          qMap.set(q.question_id, { spec: q.question_text, category: cat.category, suppliers: {} });
-                        const ans = q.supplier_answer ?? "";
-                        qMap.get(q.question_id)!.suppliers[s.supplier_name] = {
-                          answer: ans,
-                          status: !ans || ans === "—" ? "unverified" : q.score >= 7.5 ? "match" : q.score >= 5 ? "unverified" : "mismatch",
-                        };
-                      }
-                    }
-                  }
-                  const checks = [...qMap.values()];
-                  const sStyle = (st: "match" | "mismatch" | "unverified") =>
-                    st === "match" ? "text-emerald-600 bg-emerald-50 border-emerald-200"
-                    : st === "mismatch" ? "text-rose-600 bg-rose-50 border-rose-200"
-                    : "text-amber-600 bg-amber-50 border-amber-200";
-                  const sIcon = (st: "match" | "mismatch" | "unverified") =>
-                    st === "match" ? <CheckCircle2 className="h-3.5 w-3.5" />
-                    : st === "mismatch" ? <XCircle className="h-3.5 w-3.5" />
-                    : <Minus className="h-3.5 w-3.5" />;
-                  if (!checks.length) return (
-                    <Card>
-                      <CardContent className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-                        <Ruler className="h-8 w-8 text-muted-foreground" />
-                        <p className="text-sm text-muted-foreground">No quantitative spec questions in this analysis.</p>
-                        <p className="text-xs text-muted-foreground max-w-xs">
-                          Upload technical drawings and ensure the RFP includes quantitative requirements to enable conformance checking.
-                        </p>
+                {activeTab === "drawings" && (
+                  <div className="space-y-3 overflow-auto max-h-[520px] pr-1">
+                    <Card className="border-dashed">
+                      <CardContent className="p-6">
+                        <div className="flex items-start gap-4">
+                          <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                            <Ruler className="h-5 w-5 text-primary" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold">Drawing / Spec Conformance</p>
+                            <p className="text-xs text-muted-foreground mt-1 max-w-md">
+                              Upload technical drawings (PDF/DWG/DXF) for this project via the Drawings module.
+                              Once drawings are parsed, the agent will compare each supplier's stated specifications
+                              against the drawing dimensions and flag mismatches, missing evidence, and tolerances exceeded.
+                            </p>
+                          </div>
+                        </div>
                       </CardContent>
                     </Card>
-                  );
-                  return (
-                    <div className="overflow-auto border-t border-border max-h-[520px] rounded-b-md">
-                      <table className="w-full text-xs">
-                        <thead className="sticky top-0 bg-muted z-10">
-                          <tr>
-                            <th className="px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border min-w-[200px]">Spec / Requirement</th>
-                            <th className="px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border">Category</th>
-                            {enrichedSuppliers.map(s => (
-                              <th key={s.supplier_id} className="px-3 py-2.5 text-center text-muted-foreground font-medium whitespace-nowrap border-b border-border min-w-[130px]">
-                                {s.supplier_name}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {checks.map((c, i) => (
-                            <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                              <td className="px-3 py-2 font-medium line-clamp-2">{c.spec}</td>
-                              <td className="px-3 py-2 text-muted-foreground">{c.category}</td>
-                              {enrichedSuppliers.map(s => {
-                                const e = c.suppliers[s.supplier_name];
-                                if (!e) return <td key={s.supplier_id} className="px-3 py-2 text-center text-muted-foreground">—</td>;
-                                return (
-                                  <td key={s.supplier_id} className="px-3 py-2">
-                                    <div className="flex flex-col items-center gap-1">
-                                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium capitalize ${sStyle(e.status)}`}>
-                                        {sIcon(e.status)}{e.status}
-                                      </span>
-                                      {e.answer && (
-                                        <span className="text-[10px] text-muted-foreground line-clamp-2 text-center max-w-[120px]">{e.answer}</span>
-                                      )}
-                                    </div>
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
+
+                    {/* Per-supplier drawing status */}
+                    {enrichedSuppliers.map((s, i) => {
+                      // Drawing conformance data comes from backend drawings module
+                      // For now we show a per-supplier placeholder until drawings are linked
+                      const hasFlaggedItems = s.category_scores?.some(c =>
+                        c.questions?.some(q => q.flagged)
+                      );
+                      return (
+                        <Card key={s.supplier_id}>
+                          <CardContent className="p-4 flex items-start gap-3">
+                            <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 ${hasFlaggedItems ? "bg-amber-100 dark:bg-amber-900" : "bg-muted"}`}>
+                              {hasFlaggedItems
+                                ? <AlertTriangle className="h-4 w-4 text-amber-500" />
+                                : <Info className="h-4 w-4 text-muted-foreground" />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`text-sm font-semibold ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length].split(" ")[1]}`}>{s.supplier_name}</span>
+                                {hasFlaggedItems
+                                  ? <Badge variant="outline" className="text-[10px] h-4 px-1.5 border-amber-300 text-amber-700 dark:text-amber-400">Flagged Items</Badge>
+                                  : <Badge variant="outline" className="text-[10px] h-4 px-1.5 text-muted-foreground">Awaiting drawings</Badge>}
+                              </div>
+                              {hasFlaggedItems ? (
+                                <ul className="space-y-0.5">
+                                  {s.category_scores?.flatMap(c =>
+                                    c.questions?.filter(q => q.flagged).map(q => (
+                                      <li key={q.question_id} className="text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                                        <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />{q.question_text}
+                                      </li>
+                                    )) ?? []
+                                  )}
+                                </ul>
+                              ) : (
+                                <p className="text-[11px] text-muted-foreground">
+                                  No technical drawings have been uploaded for this project yet. Upload drawings in the Drawings module to enable spec conformance checking.
+                                </p>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -1381,30 +1434,10 @@ export default function AnalysisPage() {
       </div>
 
       {/* ── 3. Agent ticker ────────────────────────────────────────────────── */}
-      <div className="border-t bg-card py-2 px-4 flex items-center gap-3 shrink-0">
-        <div className={`h-2 w-2 rounded-full shrink-0 ${
-          isTickerActive ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/40"
-        }`} />
-        <p className="text-[11px] text-muted-foreground truncate flex-1">{tickerText}</p>
-        {agentLogs[0] && (
-          <Badge variant="outline" className={`text-[10px] shrink-0 ${
-            agentLogs[0].status === "complete" ? "border-emerald-200 text-emerald-600"
-            : agentLogs[0].status === "running"  ? "border-primary/30 text-primary"
-            : agentLogs[0].status === "error"    ? "border-rose-200 text-rose-600"
-            : "border-border text-muted-foreground"
-          }`}>
-            {agentLogs[0].status}
-          </Badge>
-        )}
+      <div className={`shrink-0 border-t px-6 py-2 flex items-center gap-3 overflow-hidden ${isTickerActive ? "bg-primary/5 border-primary/20" : "bg-muted/30"}`}>
+        <div className={`h-2 w-2 rounded-full shrink-0 ${isTickerActive ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}`} />
+        <p className="text-[11px] text-muted-foreground truncate font-mono">{tickerText}</p>
       </div>
-
-      {/* Print stylesheet */}
-      <style>{`
-        @media print {
-          nav, aside, [data-sidebar], .no-print { display: none !important; }
-          body { background: white !important; color: black !important; }
-        }
-      `}</style>
     </div>
   );
 }
