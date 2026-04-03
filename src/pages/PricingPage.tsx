@@ -233,6 +233,7 @@ export default function PricingPage() {
     const hdrs2 = { Authorization: `Bearer ${tok2}` };
     setProjectLoading(true);
     setProjectLoadMsg("Loading project files…");
+    const currentProjectId = projectId; // capture for stale-closure check
     // Use the persistent file library endpoint
     console.log("[pricing] loading files for project:", projectId);
     fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: hdrs2 })
@@ -273,6 +274,8 @@ export default function PricingPage() {
                 const sName: string = data.supplier_name ?? f.name ?? fname ?? "Unknown";
                 console.log("[legacy-ingest] ingested", sName, rows.length, "rows");
                 if (rows.length) {
+                  // Only update if still on the same project
+                  if (currentProjectId !== projectId) { console.log("[legacy-ingest] stale, aborting"); return; }
                   setStaged(prev => {
                     const without = prev.filter(s => s.supplierName !== sName);
                     return [...without, { supplierName: sName, rows, fileName: fname, sheetName: "", headerRow: 0 }];
@@ -308,7 +311,8 @@ export default function PricingPage() {
               if (!res.ok) { console.warn("[auto-ingest] ingest", res.status, await res.text()); continue; }
               const data = await res.json();
               const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
-              const sName: string = data.supplier_name ?? (f as any).display_name ?? f.filename ?? "Unknown";
+              const rawName = data.supplier_name ?? (f as any).display_name ?? f.filename ?? "Unknown";
+                const sName: string = rawName.replace(/\.[^.]+$/, "").trim();
               if (rows.length) {
                 setStaged(prev => {
                   const without = prev.filter(s => s.supplierName !== sName);
