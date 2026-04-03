@@ -288,7 +288,7 @@ export default function PricingPage() {
           })();
           return;
         }
-        const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: (f as any).display_name??f.filename, filename: f.filename, id: f.id }));
+        const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: ((f as any).display_name??f.filename).replace(/\.[^.]+$/, "").trim(), filename: f.filename, id: f.id }));
         setSupplierFiles(mapped);
         setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Auto-loading bids…`);
         // ── auto-ingest all files into staged ──
@@ -414,45 +414,7 @@ export default function PricingPage() {
       // Refresh file list
       fetch(`${API}/files/${projectId}?category=supplier_responses`,{headers:ah}).then(r=>r.json())
         .then((files:{id:string;filename:string;display_name:string}[]) => {
-          setSupplierFiles(files.map(f=>({path:f.id,name:f.display_name??f.filename,filename:f.filename,id:f.id} as SupplierFile)));
-        // ── Auto-ingest saved files → rebuild bid tables on project switch ──
-        (async () => {
-          for (const f of files) {
-            try {
-              const fId = f.id ?? "";
-              const urlEp = /^[0-9a-f-]{36}$/i.test(fId)
-                ? `${API}/files/${projectId}/${fId}/url`
-                : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.display_name)}/url`;
-              const urlRes = await fetch(urlEp, { headers: { Authorization: `Bearer ${token}` } });
-              if (!urlRes.ok) { console.warn("[auto-ingest] url fetch", urlRes.status); continue; }
-              const { url } = await urlRes.json();
-              // Proxy through backend to avoid CORS on signed GCS URLs
-              const dlEp = /^[0-9a-f-]{36}$/i.test(fId)
-                ? `${API}/files/${projectId}/${fId}/download`
-                : url;
-              const blobRes = await fetch(dlEp, { headers: { Authorization: `Bearer ${token}` } });
-              if (!blobRes.ok) { console.warn("[auto-ingest] download", blobRes.status); continue; }
-              const blob = await blobRes.blob();
-              const fd = new FormData();
-              fd.append("file", blob, f.filename ?? f.display_name ?? "file");
-              const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}` },
-                body: fd,
-              });
-              if (!res.ok) { console.warn("[auto-ingest]", res.status, await res.text()); continue; }
-              const data = await res.json();
-              const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
-              const sName: string = data.supplier_name ?? f.filename ?? f.display_name ?? "Unknown";
-              if (rows.length) {
-                setStaged(prev => {
-                  // re-ingest allowed (guard removed for refresh support)
-                  return [...prev, { supplierName: sName, rows, fileName: f.filename ?? f.display_name ?? "", sheetName: "", headerRow: 0 }];
-                });
-              }
-            } catch(e) { console.error("[auto-ingest] FAILED:", e); }
-          }
-        })();
+          setSupplierFiles(files.map(f=>({path:f.id,name:(f.display_name??f.filename).replace(/\.[^.]+$/, "").trim(),filename:f.filename,id:f.id} as SupplierFile)));
         }).catch(()=>{});
     }
     setParsed(null); setSheetNames([]); setSelectedFile(null); setUploadFile(null); setSupplierName(""); setHeaderRow(0);
