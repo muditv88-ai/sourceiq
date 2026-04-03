@@ -348,7 +348,7 @@ export default function PricingPage() {
               const urlEp = /^[0-9a-f-]{36}$/i.test(fId)
                 ? `${API}/files/${projectId}/${fId}/url`
                 : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.display_name)}/url`;
-              const urlRes = await fetch(urlEp, { headers: hdrs2 });
+              const urlRes = await fetch(urlEp, { headers: { Authorization: `Bearer ${token}` } });
               if (!urlRes.ok) continue;
               const { url } = await urlRes.json();
               const blob = await fetch(url).then(r => r.blob());
@@ -588,7 +588,7 @@ export default function PricingPage() {
               </CardContent>
             </Card>
 
-            {staged.length>0&&(
+            {(
               <Card>
                 <CardHeader className="py-2 px-4 flex-row items-center justify-between">
                   <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
@@ -660,12 +660,12 @@ export default function PricingPage() {
             )}
 
             {/* ── All Bids Table ── */}
-            {allRows.length>0&&(
+            {(
               <Card>
                 <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <CardTitle className="text-sm">All Bids</CardTitle>
-                    <span className="text-xs text-muted-foreground">{allRows.length} rows · {staged.length} suppliers</span>
+                    <span className="text-xs text-muted-foreground">{allRows.length > 0 ? `${allRows.length} rows · ${staged.length} suppliers` : "No bids loaded — select a project or upload a file"}</span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     {allRows.length>0&&<><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('csv')}><Download className="w-3 h-3"/>CSV</Button><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('xlsx')}><Download className="w-3 h-3"/>XLSX</Button></>}
@@ -733,7 +733,7 @@ export default function PricingPage() {
             )}
 
             {/* ── Bid Comparison Table ── */}
-            {pivot.length>0 ? (
+            {true ? (
               <Card>
                 <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
@@ -803,7 +803,7 @@ export default function PricingPage() {
                   </table>
                 </div>
               </Card>
-            ) : !parsed&&allRows.length===0 ? (
+            ) : !staged.length ? (
               <div className="flex-1 flex items-center justify-center min-h-[200px]">
                 <div className="text-center">
                   <div className="text-5xl opacity-20 mb-3">📊</div>
