@@ -9,7 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useNavigate } from "react-router-dom";
-import { ChevronUp, ChevronDown, ChevronsUpDown, ArrowRight, BarChart3, FlaskConical } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, ArrowRight, BarChart3, FlaskConical, Download, Save } from "lucide-react";
 
 const API = "/api";
 
@@ -218,6 +218,16 @@ export default function PricingPage() {
     fetch(`${API}/projects/${projectId}`, { headers: ah }).then(r=>r.json())
       .then(d => setSupplierFiles((d.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}))))
       .catch(()=>{});
+    fetch(`${API}/projects/${projectId}/pricing-rows`, { headers: ah })
+      .then(r=>r.ok?r.json():null)
+      .then(d => {
+        if (!d?.suppliers?.length) return;
+        const loaded: StagedSupplier[] = d.suppliers.map((s: {supplier_name:string; rows:BidRow[]}) => ({
+          supplierName: s.supplier_name, rows: s.rows ?? [],
+          fileName: s.supplier_name, sheetName: "", headerRow: 0,
+        }));
+        setStaged(loaded);
+      }).catch(()=>{});
   }, [projectId]);
 
   useEffect(() => {
@@ -230,6 +240,13 @@ export default function PricingPage() {
   }, [token]);
 
   useEffect(() => { setPage(1); }, [pageSize, sortCol, sortDir, staged]);
+
+  useEffect(() => {
+    if (typeof (window as any).XLSX !== 'undefined') return;
+    const s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    document.head.appendChild(s);
+  }, []);
 
   const doIngest = useCallback(async (blob: Blob, fname: string, hrow=0, sname?: string, sheetOverride?: string, userPickedHeader=false) => {
     setParsing(true);
@@ -287,7 +304,48 @@ export default function PricingPage() {
       if (idx>=0) { const u=[...prev]; u[idx]=entry; return u; }
       return [...prev, entry];
     });
+    if (projectId && uploadFile) {
+      const fd2 = new FormData(); fd2.append("file",uploadFile); fd2.append("supplier_name",sName);
+      await fetch(`${API}/projects/${projectId}/upload-supplier`,{method:"POST",headers:ah,body:fd2}).catch(()=>{});
+      fetch(`${API}/projects/${projectId}`,{headers:ah}).then(r=>r.json()).then(d=>setSupplierFiles((d.suppliers??[]).map((s: SupplierFile)=>({...s,filename:s.path?.split("/").pop()??s.name})))).catch(()=>{});
+    }
     setParsed(null); setSheetNames([]); setSelectedFile(null); setUploadFile(null); setSupplierName(""); setHeaderRow(0);
+  };
+
+
+
+  const downloadCSV = (filename: string, headers: string[], rows: unknown[][]) => {
+    const esc = (v: unknown) => { const s=String(v??''); return /[,\n"]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; };
+    const csv = [headers.map(esc).join(','), ...rows.map(r=>r.map(esc).join(','))].join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download = filename; a.click();
+  };
+
+  const downloadXLSX = (filename: string, sheets: {name:string; headers:string[]; rows:unknown[][]}[]) => {
+    if (typeof (window as any).XLSX !== 'undefined') {
+      const XL = (window as any).XLSX;
+      const wb = XL.utils.book_new();
+      sheets.forEach(sh => { const ws=XL.utils.aoa_to_sheet([sh.headers,...sh.rows]); XL.utils.book_append_sheet(wb,ws,sh.name.slice(0,31)); });
+      XL.writeFile(wb, filename);
+    } else { sheets.forEach(sh => downloadCSV(`${sh.name}.csv`,sh.headers,sh.rows)); }
+  };
+
+  const handleDownload = (fmt: 'csv'|'xlsx') => {
+    const abH = ['Item','Supplier','Category','UoM','Qty','Unit Price','Total','Delta vs Best'];
+    const abR = sortedAllRows.map(r=>[String(r.lineItem??''),String(r.supplier??''),String(r.category??''),String(r.unitOfMeasure??''),Number(r.quantity??0),Number(r.unitPrice??0),Number(r.total??0),Number(r.delta??0)]);
+    const cH = ['Item',...pivotSuppliers,'Lowest Price','Lowest Supplier','Highest Price','Highest Supplier','Avg Price','Spread %','Analysis'];
+    const cR = pivot.map(r=>[String(r.item??''),...pivotSuppliers.map(s=>r[s]!=null?Number(r[s]):''),r.lowest_price!=null?Number(r.lowest_price):'',String(r.lowest_supplier??''),r.highest_price!=null?Number(r.highest_price):'',String(r.highest_supplier??''),r.avg_price!=null?+r.avg_price.toFixed(2):'',r.spread_pct!=null?Number(r.spread_pct):'',agentComment(r,pivotSuppliers)]);
+    const pName = projects.find(p=>p.id===projectId)?.name??'project';
+    const ts = new Date().toISOString().slice(0,10);
+    if (fmt==='csv') {
+      downloadCSV(`${pName}_all_bids_${ts}.csv`,abH,abR);
+      if (pivot.length) downloadCSV(`${pName}_comparison_${ts}.csv`,cH,cR);
+    } else {
+      downloadXLSX(`${pName}_pricing_analysis_${ts}.xlsx`,[
+        {name:'All Bids',headers:abH,rows:abR},
+        ...(pivot.length?[{name:'Comparison',headers:cH,rows:cR}]:[]),
+      ]);
+    }
   };
 
   const removeSupplier = (name: string) => setStaged(prev=>prev.filter(s=>s.supplierName!==name));
@@ -454,9 +512,14 @@ export default function PricingPage() {
 
             {staged.length>0&&(
               <Card>
-                <CardHeader className="py-2 px-4">
+                <CardHeader className="py-2 px-4 flex-row items-center justify-between">
                   <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
+                  {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
+                    await fetch(`${API}/projects/${projectId}/pricing-rows`,{method:"POST",headers:{...ah,"Content-Type":"application/json"},body:JSON.stringify({suppliers:staged.map(s=>({supplier_name:s.supplierName,rows:s.rows}))})}).catch(()=>{});
+                    const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
+                  }}><Save className="w-3 h-3"/>Save</Button>}
                 </CardHeader>
+                <div id="save-toast" style={{opacity:0,transition:"opacity 0.4s"}} className="px-4 pb-1 text-[10px] text-success">✓ Saved to project</div>
                 <CardContent className="px-4 pb-3 flex flex-col gap-1.5">
                   {staged.map((s,i)=>(
                     <div key={s.supplierName} className="flex items-center justify-between">
@@ -526,7 +589,8 @@ export default function PricingPage() {
                     <CardTitle className="text-sm">All Bids</CardTitle>
                     <span className="text-xs text-muted-foreground">{allRows.length} rows · {staged.length} suppliers</span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {allRows.length>0&&<><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('csv')}><Download className="w-3 h-3"/>CSV</Button><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('xlsx')}><Download className="w-3 h-3"/>XLSX</Button></>}
                     <span className="text-xs text-muted-foreground">Rows/page:</span>
                     {[10,20,50,100].map(n=>(
                       <button key={n} onClick={()=>setPageSize(n)}
