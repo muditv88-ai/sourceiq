@@ -159,6 +159,7 @@ export default function PricingPage() {
   const [parsed, setParsed]             = useState<IngestV2Result|null>(null);
   const [parsing, setParsing]           = useState(false);
   const [staged, setStaged]             = useState<StagedSupplier[]>([]);
+  const [reloadKey, setReloadKey]        = useState(0);
   const [agentLogs, setAgentLogs]       = useState<AgentLog[]>([]);
   const [projectLoading, setProjectLoading] = useState(false);
   const [projectLoadMsg, setProjectLoadMsg] = useState("");
@@ -255,7 +256,7 @@ export default function PricingPage() {
         setProjectLoading(false);
       });
 
-  }, [projectId]);
+  }, [projectId, reloadKey]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -469,8 +470,8 @@ export default function PricingPage() {
               <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </div>
             <button
-              onClick={refreshComparison}
-              disabled={loadingComp || !projectId}
+              onClick={() => { setStaged([]); setReloadKey(k => k+1); }}
+              disabled={projectLoading || !projectId}
               title="Refresh tables"
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -855,8 +856,8 @@ export default function PricingPage() {
                   size="sm"
                   variant="outline"
                   className="mt-3 gap-1.5 text-xs"
-                  onClick={refreshComparison}
-                  disabled={loadingComp || !projectId}
+                  onClick={() => { setStaged([]); setReloadKey(k => k+1); }}
+                  disabled={projectLoading || !projectId}
                 >
                   {loadingComp ? (
                     <span className="w-3 h-3 border border-border border-t-foreground rounded-full animate-spin" />
