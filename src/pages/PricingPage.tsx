@@ -220,7 +220,7 @@ export default function PricingPage() {
         // Handle both { projects:[...] } and { items:[...] } and plain array
         const l: Project[] = Array.isArray(d) ? d : (d.projects ?? d.items ?? []);
         setProjects(l);
-        if (l.length) setProjectId(prev => prev || l[0].id);
+        if (l.length) setProjectId(prev => prev || l[0].project_id);
       })
       .catch(()=>{});
   }, []);
@@ -302,7 +302,7 @@ export default function PricingPage() {
   const getBlob = async (): Promise<{blob:Blob;fname:string}|null> => {
     if (ingestMode==="project"&&selectedFile) {
       try {
-        const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(selectedFile.filename??selectedFile.name)}/url`, { headers:ah });
+        const urlRes = await fetch(`${API}/files/${projectId}/supplier/${encodeURIComponent(selectedFile.filename??selectedFile.name)}/url`, { headers:ah });
         const { url } = await urlRes.json();
         return { blob: await fetch(url).then(r=>r.blob()), fname: selectedFile.filename??selectedFile.name };
       } catch { return null; }
@@ -368,7 +368,7 @@ export default function PricingPage() {
     const abR = sortedAllRows.map(r=>[String(r.lineItem??''),String(r.supplier??''),String(r.category??''),String(r.unitOfMeasure??''),Number(r.quantity??0),Number(r.unitPrice??0),Number(r.total??0),Number(r.delta??0)]);
     const cH = ['Item',...pivotSuppliers,'Lowest Price','Lowest Supplier','Highest Price','Highest Supplier','Avg Price','Spread %','Analysis'];
     const cR = pivot.map(r=>[String(r.item??''),...pivotSuppliers.map(s=>r[s]!=null?Number(r[s]):''),r.lowest_price!=null?Number(r.lowest_price):'',String(r.lowest_supplier??''),r.highest_price!=null?Number(r.highest_price):'',String(r.highest_supplier??''),r.avg_price!=null?+r.avg_price.toFixed(2):'',r.spread_pct!=null?Number(r.spread_pct):'',agentComment(r,pivotSuppliers)]);
-    const pName = projects.find(p=>p.id===projectId)?.name??'project';
+    const pName = projects.find(p=>p.project_id===projectId)?.name??'project';
     const ts = new Date().toISOString().slice(0,10);
     if (fmt==='csv') {
       downloadCSV(`${pName}_all_bids_${ts}.csv`,abH,abR);
@@ -417,7 +417,7 @@ export default function PricingPage() {
                 className="h-8 w-52 rounded-md border border-input bg-background px-3 pr-8 text-sm text-foreground appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 <option value="" disabled>Select project…</option>
-                {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                {projects.map(p=><option key={p.id} value={p.project_id}>{p.name}</option>)}
               </select>
               <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </div>
@@ -492,7 +492,7 @@ export default function PricingPage() {
                               const isUUIDf = fId && /^[0-9a-f-]{36}$/i.test(fId);
                               const urlEp = isUUIDf
                                 ? `${API}/files/${projectId}/${fId}/url`
-                                : `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
+                                : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
                               const urlRes = await fetch(urlEp, { headers:ah });
                               const { url } = await urlRes.json();
                               const blob = await fetch(url).then(r=>r.blob());
