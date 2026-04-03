@@ -475,7 +475,7 @@ export default function PricingPage() {
               title="Refresh tables"
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {loadingComp ? (
+              {projectLoading ? (
                 <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
               ) : (
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -859,7 +859,7 @@ export default function PricingPage() {
                   onClick={() => { setStaged([]); setReloadKey(k => k+1); }}
                   disabled={projectLoading || !projectId}
                 >
-                  {loadingComp ? (
+                  {projectLoading ? (
                     <span className="w-3 h-3 border border-border border-t-foreground rounded-full animate-spin" />
                   ) : (
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
