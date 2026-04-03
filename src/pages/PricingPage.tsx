@@ -231,7 +231,7 @@ export default function PricingPage() {
 
   useEffect(() => { setPage(1); }, [pageSize, sortCol, sortDir, staged]);
 
-  const doIngest = useCallback(async (blob: Blob, fname: string, hrow=0, sname?: string) => {
+  const doIngest = useCallback(async (blob: Blob, fname: string, hrow=0, sname?: string, sheetOverride?: string, userPickedHeader=false) => {
     setParsing(true);
     try {
       const fd = new FormData();
@@ -239,15 +239,21 @@ export default function PricingPage() {
       fd.append("header_row", String(hrow));
       if (sname??supplierName) fd.append("supplier_name", sname??supplierName);
       if (projectId) fd.append("project_id", projectId);
-      if (selectedSheet) fd.append("sheet_name", selectedSheet);
+      const sheetToSend = sheetOverride ?? selectedSheet;
+      if (sheetToSend) fd.append("sheet_name", sheetToSend);
       const res  = await fetch(`${API}/pricing-analysis/ingest-v2`, { method:"POST", headers:ah, body:fd });
       const data: IngestV2Result = await res.json();
       setParsed(data);
-      if (data.sheet_names?.length) { setSheetNames(data.sheet_names); setSelectedSheet(data.selected_sheet??data.sheet_names[0]); }
-      setHeaderRow(data.detected_header_row??hrow);
+      if (data.sheet_names?.length) {
+        setSheetNames(data.sheet_names);
+        // Only override displayed sheet if the user didn't explicitly pick one
+        if (!sheetOverride) setSelectedSheet(data.selected_sheet??data.sheet_names[0]);
+      }
+      // Only override header row if user didn't manually set it
+      if (!userPickedHeader) setHeaderRow(data.detected_header_row??hrow);
     } catch {}
     setParsing(false);
-  }, [supplierName, projectId, selectedSheet, token]);
+  }, [supplierName, projectId, token]);
 
   const getBlob = async (): Promise<{blob:Blob;fname:string}|null> => {
     if (ingestMode==="project"&&selectedFile) {
@@ -420,7 +426,7 @@ export default function PricingPage() {
                 {sheetNames.length>1&&(
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">Sheet Tab</label>
-                    <Select value={selectedSheet} onValueChange={async v=>{ setSelectedSheet(v); const pair=await getBlob(); if(pair) await doIngest(pair.blob,pair.fname,headerRow); }}>
+                    <Select value={selectedSheet} onValueChange={async v=>{ setSelectedSheet(v); const pair=await getBlob(); if(pair) await doIngest(pair.blob,pair.fname,headerRow,undefined,v,false); }}>
                       <SelectTrigger className="h-8 text-xs"><SelectValue/></SelectTrigger>
                       <SelectContent>{sheetNames.map(s=><SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                     </Select>
@@ -436,7 +442,7 @@ export default function PricingPage() {
                         onChange={e=>setHeaderRow(parseInt(e.target.value)||0)}
                         className="w-16 bg-background border border-input rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-ring"/>
                       <Button size="sm" variant="outline" className="h-7 text-xs"
-                        onClick={async()=>{ const pair=await getBlob(); if(pair) await doIngest(pair.blob,pair.fname,headerRow); }}>
+                        onClick={async()=>{ const pair=await getBlob(); if(pair) await doIngest(pair.blob,pair.fname,headerRow,undefined,selectedSheet,true); }}>
                         Re-parse
                       </Button>
                     </div>
