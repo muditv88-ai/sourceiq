@@ -244,8 +244,47 @@ export default function PricingPage() {
           const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
           const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
           setSupplierFiles(legacy);
-          setProjectLoadMsg(legacy.length ? `Found ${legacy.length} supplier file${legacy.length>1?'s':''} (legacy)` : "No supplier files found in this project");
-          setProjectLoading(false);
+          if (!legacy.length) {
+            setProjectLoadMsg("No supplier files found in this project");
+            setProjectLoading(false);
+            return;
+          }
+          setProjectLoadMsg(`Found ${legacy.length} supplier file${legacy.length>1?'s':''}. Auto-loading bids…`);
+          // ── auto-ingest legacy supplier files via GCS signed URL ──
+          (async () => {
+            for (const f of legacy) {
+              try {
+                const fname = f.filename ?? f.name ?? "file.xlsx";
+                const urlRes = await fetch(
+                  `${API}/files/${projectId}/supplier/${encodeURIComponent(fname)}/url`,
+                  { headers: hdrs2 }
+                );
+                if (!urlRes.ok) { console.warn("[legacy-ingest] url", urlRes.status, fname); continue; }
+                const { url } = await urlRes.json();
+                const blob = await fetch(url).then(r => r.blob());
+                const fd = new FormData();
+                fd.append("file", blob, fname);
+                const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${tok2}` },
+                  body: fd,
+                });
+                if (!res.ok) { console.warn("[legacy-ingest] ingest", res.status); continue; }
+                const data = await res.json();
+                const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
+                const sName: string = data.supplier_name ?? f.name ?? fname ?? "Unknown";
+                console.log("[legacy-ingest] ingested", sName, rows.length, "rows");
+                if (rows.length) {
+                  setStaged(prev => {
+                    const without = prev.filter(s => s.supplierName !== sName);
+                    return [...without, { supplierName: sName, rows, fileName: fname, sheetName: "", headerRow: 0 }];
+                  });
+                }
+              } catch(e) { console.error("[legacy-ingest] FAILED:", e); }
+            }
+            setProjectLoadMsg(`Loaded ${legacy.length} supplier file${legacy.length>1?'s':''}.`);
+            setProjectLoading(false);
+          })();
           return;
         }
         const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: (f as any).display_name??f.filename, filename: f.filename, id: f.id }));
