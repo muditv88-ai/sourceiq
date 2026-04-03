@@ -307,9 +307,14 @@ export default function PricingPage() {
               const rawName = data.supplier_name ?? (f as any).display_name ?? f.filename ?? "Unknown";
               const sName: string = rawName.replace(/\.[^.]+$/, "").trim();
               if (rows.length) {
+                // Guard: abort if user already switched to a different project
+                if (currentProjectId !== projectId) {
+                  console.log("[auto-ingest] stale, aborting");
+                  continue;
+                }
                 setStaged(prev => {
                   const without = prev.filter(s => s.supplierName !== sName);
-                  return [...without, { supplierName: sName, rows, fileName: f.filename ?? f.display_name ?? "", sheetName: "", headerRow: 0 }];
+                  return [...without, { supplierName: sName, rows, fileName: f.filename ?? (f as any).display_name ?? "", sheetName: "", headerRow: 0 }];
                 });
               }
             } catch(e) { console.error("[auto-ingest] FAILED:", e); }
