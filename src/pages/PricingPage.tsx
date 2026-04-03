@@ -140,6 +140,10 @@ export default function PricingPage() {
   const navigate = useNavigate();
   const token = localStorage.getItem("access_token") ?? "";
   const ah = { Authorization: `Bearer ${token}` };
+  const getUserId = () => {
+    try { const p = JSON.parse(atob(token.split('.')[1])); return p.sub ?? p.user_id ?? p.id ?? ""; }
+    catch { return ""; }
+  };
 
   const [projects, setProjects]   = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -156,6 +160,8 @@ export default function PricingPage() {
   const [parsing, setParsing]           = useState(false);
   const [staged, setStaged]             = useState<StagedSupplier[]>([]);
   const [agentLogs, setAgentLogs]       = useState<AgentLog[]>([]);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [projectLoadMsg, setProjectLoadMsg] = useState("");
 
   const [pageSize, setPageSize] = useState(20);
   const [page, setPage]         = useState(1);
@@ -224,27 +230,30 @@ export default function PricingPage() {
     setSupplierFiles([]); setSelectedFile(null); setParsed(null); setStaged([]); setPage(1);
     const tok2 = localStorage.getItem("access_token") ?? "";
     const hdrs2 = { Authorization: `Bearer ${tok2}` };
-    fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json())
-      .then(async d => {
-        const files: SupplierFile[] = (d.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
-        setSupplierFiles(files);
-        // Auto-ingest any JSON sidecar rows files (_rows.json) stored in the project
-        const jsonFiles = files.filter(f => (f.filename??f.name??'').endsWith('_rows.json'));
-        const newStaged: StagedSupplier[] = [];
-        for (const jf of jsonFiles) {
-          try {
-            const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(jf.filename??jf.name)}/url`, { headers: hdrs2 });
-            if (!urlRes.ok) continue;
-            const { url } = await urlRes.json();
-            const data = await fetch(url).then(r=>r.json());
-            if (data?.supplier_name && Array.isArray(data?.rows) && data.rows.length) {
-              newStaged.push({ supplierName: data.supplier_name, rows: data.rows, fileName: jf.filename??jf.name, sheetName: "", headerRow: 0 });
-            }
-          } catch {}
+    setProjectLoading(true);
+    setProjectLoadMsg("Loading project files…");
+    // Use the persistent file library endpoint
+    fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: hdrs2 })
+      .then(r => r.ok ? r.json() : [])
+      .then(async (files: {id:string; filename:string; display_name:string; size_bytes:number}[]) => {
+        if (!files.length) {
+          // fallback: try legacy suppliers.json metadata
+          const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
+          const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
+          setSupplierFiles(legacy);
+          setProjectLoadMsg(legacy.length ? `Found ${legacy.length} supplier file${legacy.length>1?'s':''} (legacy)` : "No supplier files found in this project");
+          setProjectLoading(false);
+          return;
         }
-        if (newStaged.length) setStaged(newStaged);
+        const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: f.display_name??f.filename, filename: f.filename, id: f.id }));
+        setSupplierFiles(mapped);
+        setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Click to load bids.`);
+        setProjectLoading(false);
       })
-      .catch(()=>{});
+      .catch(() => {
+        setProjectLoadMsg("Could not load project files");
+        setProjectLoading(false);
+      });
 
   }, [projectId]);
 
@@ -311,12 +320,7 @@ export default function PricingPage() {
       body: JSON.stringify({ rows, project_id:projectId, supplier_name:sName }),
     }).catch(()=>{});
     if (projectId) {
-      // Persist rows as JSON sidecar so they reload on next project open
-      const rowBlob = new Blob([JSON.stringify({supplier_name:sName, rows})],{type:"application/json"});
-      const rowFd = new FormData();
-      rowFd.append("file", rowBlob, `${sName}_rows.json`);
-      rowFd.append("supplier_name", sName);
-      await fetch(`${API}/projects/${projectId}/supplier`,{method:"POST",headers:{Authorization:`Bearer ${localStorage.getItem("access_token")??""}` },body:rowFd}).catch(()=>{});
+      
     }
     setStaged(prev => {
       const idx = prev.findIndex(s=>s.supplierName===sName);
@@ -325,9 +329,18 @@ export default function PricingPage() {
       return [...prev, entry];
     });
     if (projectId && uploadFile) {
-      const fd2 = new FormData(); fd2.append("file",uploadFile); fd2.append("supplier_name",sName);
-      await fetch(`${API}/projects/${projectId}/upload-supplier`,{method:"POST",headers:ah,body:fd2}).catch(()=>{});
-      fetch(`${API}/projects/${projectId}`,{headers:ah}).then(r=>r.json()).then(d=>setSupplierFiles((d.suppliers??[]).map((s: SupplierFile)=>({...s,filename:s.path?.split("/").pop()??s.name})))).catch(()=>{});
+      const fd2 = new FormData();
+      fd2.append("file", uploadFile);
+      fd2.append("project_id", projectId!);
+      fd2.append("category", "supplier_responses");
+      fd2.append("user_id", getUserId());
+      fd2.append("display_name", sName);
+      await fetch(`${API}/files/upload`,{method:"POST",headers:{Authorization:`Bearer ${token}`},body:fd2}).catch(()=>{});
+      // Refresh file list
+      fetch(`${API}/files/${projectId}?category=supplier_responses`,{headers:ah}).then(r=>r.json())
+        .then((files:{id:string;filename:string;display_name:string}[]) => {
+          setSupplierFiles(files.map(f=>({path:f.id,name:f.display_name??f.filename,filename:f.filename,id:f.id} as SupplierFile)));
+        }).catch(()=>{});
     }
     setParsed(null); setSheetNames([]); setSelectedFile(null); setUploadFile(null); setSupplierName(""); setHeaderRow(0);
   };
@@ -462,6 +475,7 @@ export default function PricingPage() {
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
                       Supplier Files {supplierFiles.length>0&&<span className="opacity-60">({supplierFiles.length})</span>}
+                      {!projectLoading && projectLoadMsg && supplierFiles.length>0 && <span className="ml-1 text-[10px] text-success opacity-75">✓</span>}
                     </label>
                     {supplierFiles.length===0 ? (
                       <p className="text-xs text-muted-foreground bg-muted rounded-md p-3 border border-border">
@@ -474,7 +488,12 @@ export default function PricingPage() {
                             setSelectedFile(f);
                             if (!supplierName) setSupplierName(f.name);
                             try {
-                              const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(f.filename??f.name)}/url`, { headers:ah });
+                              const fId = (f as any).id;
+                              const isUUIDf = fId && /^[0-9a-f-]{36}$/i.test(fId);
+                              const urlEp = isUUIDf
+                                ? `${API}/files/${projectId}/${fId}/url`
+                                : `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
+                              const urlRes = await fetch(urlEp, { headers:ah });
                               const { url } = await urlRes.json();
                               const blob = await fetch(url).then(r=>r.blob());
                               await doIngest(blob, f.filename??f.name, 0, f.name);
@@ -542,14 +561,7 @@ export default function PricingPage() {
                 <CardHeader className="py-2 px-4 flex-row items-center justify-between">
                   <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
                   {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
-                    // Save each staged supplier's rows as JSON sidecar file
-                    for (const s of staged) {
-                      const blob = new Blob([JSON.stringify({supplier_name:s.supplierName,rows:s.rows})],{type:"application/json"});
-                      const fd3 = new FormData();
-                      fd3.append("file", blob, `${s.supplierName}_rows.json`);
-                      fd3.append("supplier_name", s.supplierName);
-                      await fetch(`${API}/projects/${projectId}/supplier`,{method:"POST",headers:{Authorization:`Bearer ${localStorage.getItem("access_token")??""}` },body:fd3}).catch(()=>{});
-                    }
+                    // files already persisted on confirm
                     const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
                   }}><Save className="w-3 h-3"/>Save</Button>}
                 </CardHeader>
