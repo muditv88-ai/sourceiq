@@ -366,8 +366,8 @@ const SupplierPricingIngest: React.FC<Props> = ({ projectId: propProjectId, onCo
                 {showSample ? "Hide" : "Preview"} sample rows ({d.sample_rows.length})
               </button>
               {showSample && d.sample_rows.length > 0 && (
-                <div className="mt-2 rounded-lg border border-border overflow-x-auto max-w-full">
-                  <table className="w-full text-xs whitespace-nowrap">
+                <div className="mt-2 rounded-lg border border-border overflow-x-auto">
+                  <table className="min-w-full text-xs whitespace-nowrap">
                     <thead>
                       <tr className="border-b border-border bg-muted/40">
                         {Object.keys(d.sample_rows[0]).slice(0, 8).map((col) => (
