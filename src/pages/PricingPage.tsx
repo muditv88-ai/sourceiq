@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   TrendingDown, Users, BarChart3,
   ChevronUp, ChevronDown, ArrowUpDown,
-  AlertCircle, Trash2, RefreshCw,
+  AlertCircle, Trash2, RefreshCw, Trophy,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,10 @@ const API_BASE =
   "http://localhost:8000";
 
 const PROJECT_ID = "proj-default";
+const PAGE_SIZES = [10, 20, 50, 100];
+const HIDDEN     = new Set(["project_id"]);
+const colLabel   = (c: string) =>
+  c.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 
 /* ── Types ─────────────────────────────────────────────────────────────────── */
 interface KPIs {
@@ -26,27 +30,23 @@ interface KPIs {
   lowest_bid: number | null;
   highest_bid: number | null;
 }
-
 interface Supplier {
-  supplier: string;
-  line_items: number;
-  avg_unit_price: number | null;
-  min_unit_price: number | null;
+  supplier: string; line_items: number;
+  avg_unit_price: number | null; min_unit_price: number | null;
 }
-
 interface BidRow {
-  item?: string;
-  supplier?: string;
-  unit?: string;
-  quantity?: number | string;
-  unit_price?: number | null;
-  total_price?: number | null;
-  currency?: string;
-  delta_pct?: number | null;
-  bid_position?: string;
+  item?: string; supplier?: string; unit?: string;
+  quantity?: number | string; unit_price?: number | null;
+  total_price?: number | null; currency?: string;
+  delta_pct?: number | null; bid_position?: string;
   [key: string]: unknown;
 }
-
+interface PivotRow {
+  item: string; lowest_supplier: string | null; lowest_price: number | null;
+  highest_supplier: string | null; highest_price: number | null;
+  saving_vs_baseline_pct: number | null;
+  [key: string]: unknown;
+}
 type SortDir = "asc" | "desc";
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
@@ -86,39 +86,39 @@ const KPICard: React.FC<{
   </Card>
 );
 
-const PAGE_SIZES = [10, 20, 50, 100];
-const HIDDEN = new Set(["project_id"]);
-const colLabel = (c: string) =>
-  c.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-
-/* ── Component ──────────────────────────────────────────────────────────────── */
+/* ── Main Component ─────────────────────────────────────────────────────────── */
 const PricingPage: React.FC = () => {
-  const [kpis, setKpis]               = useState<KPIs | null>(null);
-  const [suppliers, setSuppliers]     = useState<Supplier[]>([]);
-  const [bids, setBids]               = useState<BidRow[]>([]);
-  const [columns, setColumns]         = useState<string[]>([]);
-  const [total, setTotal]             = useState(0);
-  const [pageSize, setPageSize]       = useState(20);
-  const [offset, setOffset]           = useState(0);
-  const [sortCol, setSortCol]         = useState("unit_price");
-  const [sortDir, setSortDir]         = useState<SortDir>("asc");
-  const [deleting, setDeleting]       = useState<string | null>(null);
-  const [refreshKey, setRefreshKey]   = useState(0);
+  const [kpis, setKpis]             = useState<KPIs | null>(null);
+  const [suppliers, setSuppliers]   = useState<Supplier[]>([]);
+  const [bids, setBids]             = useState<BidRow[]>([]);
+  const [columns, setColumns]       = useState<string[]>([]);
+  const [total, setTotal]           = useState(0);
+  const [pivot, setPivot]           = useState<PivotRow[]>([]);
+  const [pivotSuppliers, setPivotSuppliers] = useState<string[]>([]);
+  const [pageSize, setPageSize]     = useState(20);
+  const [offset, setOffset]         = useState(0);
+  const [sortCol, setSortCol]       = useState("unit_price");
+  const [sortDir, setSortDir]       = useState<SortDir>("asc");
+  const [deleting, setDeleting]     = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [kRes, bRes, sRes] = await Promise.all([
+      const [kRes, bRes, sRes, cRes] = await Promise.all([
         fetch(`${API_BASE}/pricing-analysis/summary/${PROJECT_ID}`),
         fetch(`${API_BASE}/pricing-analysis/bids/${PROJECT_ID}?limit=${pageSize}&offset=${offset}`),
         fetch(`${API_BASE}/pricing-analysis/suppliers/${PROJECT_ID}`),
+        fetch(`${API_BASE}/pricing-analysis/comparison/${PROJECT_ID}`),
       ]);
       if (kRes.ok) setKpis(await kRes.json());
       if (sRes.ok) { const d = await sRes.json(); setSuppliers(d.suppliers ?? []); }
       if (bRes.ok) {
         const d = await bRes.json();
-        setBids(d.bids ?? []);
-        setColumns(d.columns ?? []);
-        setTotal(d.total ?? 0);
+        setBids(d.bids ?? []); setColumns(d.columns ?? []); setTotal(d.total ?? 0);
+      }
+      if (cRes.ok) {
+        const d = await cRes.json();
+        setPivot(d.pivot ?? []); setPivotSuppliers(d.suppliers ?? []);
       }
     } catch { /* silent */ }
   }, [pageSize, offset, refreshKey]);
@@ -153,9 +153,10 @@ const PricingPage: React.FC = () => {
     else { setSortCol(col); setSortDir("asc"); }
   };
 
-  const visibleCols = columns.filter((c) => !HIDDEN.has(c));
-  const totalPages  = Math.ceil(total / pageSize);
-  const currentPage = Math.floor(offset / pageSize) + 1;
+  const visibleCols  = columns.filter((c) => !HIDDEN.has(c));
+  const totalPages   = Math.ceil(total / pageSize);
+  const currentPage  = Math.floor(offset / pageSize) + 1;
+  const hasAnalysis  = pivot.length > 0 && pivotSuppliers.length >= 2;
 
   return (
     <div className="space-y-6 p-6">
@@ -177,7 +178,8 @@ const PricingPage: React.FC = () => {
           sub={kpis?.baseline != null
             ? `vs ${kpis.baseline_source === "median_of_bids" ? "median" : "baseline"} ${fmt(kpis.baseline)}`
             : "Upload bids to calculate"}
-          highlight={kpis?.potential_savings_pct != null && kpis.potential_savings_pct > 0 ? "green" : "default"}
+          highlight={kpis?.potential_savings_pct != null && kpis.potential_savings_pct > 0
+            ? "green" : "default"}
         />
         <KPICard
           icon={<Users className="h-5 w-5" />}
@@ -195,15 +197,14 @@ const PricingPage: React.FC = () => {
           sub={kpis?.baseline_source === "median_of_bids"
             ? "Baseline = median of bids"
             : kpis?.baseline_source === "provided"
-            ? "Baseline from RFP template"
-            : "No bids yet"}
+            ? "Baseline from RFP template" : "No bids yet"}
           highlight={kpis?.avg_delta_pct == null ? "default"
             : kpis.avg_delta_pct < 0 ? "green"
             : kpis.avg_delta_pct > 5 ? "amber" : "default"}
         />
       </div>
 
-      {/* Supplier chips with delete */}
+      {/* Supplier chips */}
       {suppliers.length > 0 && (
         <Card>
           <CardHeader className="pb-2 pt-4">
@@ -225,8 +226,8 @@ const PricingPage: React.FC = () => {
                   <button
                     onClick={() => handleDelete(s.supplier)}
                     disabled={deleting === s.supplier}
-                    className="ml-1 text-muted-foreground hover:text-red-500 transition-colors
-                      disabled:opacity-40"
+                    className="ml-1 text-muted-foreground hover:text-red-500
+                      transition-colors disabled:opacity-40"
                     title={`Remove ${s.supplier}`}
                   >
                     {deleting === s.supplier
@@ -243,7 +244,95 @@ const PricingPage: React.FC = () => {
       {/* Upload */}
       <SupplierPricingIngest projectId={PROJECT_ID} onCommit={handleCommit} />
 
-      {/* Bid Table */}
+      {/* ── Bid Analysis (item × supplier comparison) ── */}
+      {hasAnalysis && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Trophy className="h-4 w-4 text-muted-foreground" />
+              Bid Analysis
+              <Badge variant="secondary">{pivot.length} items · {pivotSuppliers.length} suppliers</Badge>
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              Side-by-side unit price comparison. 🥇 highlights the lowest bid per item.
+            </p>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs whitespace-nowrap">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40">
+                    <th className="sticky left-0 z-10 bg-muted/40 px-4 py-2.5 text-left
+                      font-medium text-muted-foreground min-w-[180px]">
+                      Item
+                    </th>
+                    {pivotSuppliers.map((s) => (
+                      <th key={s} className="px-4 py-2.5 text-right font-medium text-muted-foreground">
+                        {s}
+                      </th>
+                    ))}
+                    <th className="px-4 py-2.5 text-right font-medium text-muted-foreground">
+                      Saving vs Baseline
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pivot.map((row, i) => (
+                    <tr key={i}
+                      className={`border-b border-border last:border-0
+                        ${i % 2 === 0 ? "bg-background" : "bg-muted/10"}`}>
+                      {/* Item name */}
+                      <td className="sticky left-0 z-10 bg-inherit px-4 py-2.5
+                        font-medium text-foreground max-w-[220px] truncate"
+                        title={row.item}>
+                        {row.item}
+                      </td>
+                      {/* Price per supplier */}
+                      {pivotSuppliers.map((s) => {
+                        const price = row[s] as number | null;
+                        const isLowest = price != null && price === row.lowest_price
+                          && s === row.lowest_supplier;
+                        const isHighest = price != null && price === row.highest_price
+                          && s === row.highest_supplier;
+                        return (
+                          <td key={s} className="px-4 py-2.5 text-right tabular-nums">
+                            {price == null
+                              ? <span className="text-muted-foreground/40 italic">—</span>
+                              : <span className={`font-mono text-xs font-medium
+                                  ${isLowest  ? "text-green-600 dark:text-green-400"
+                                  : isHighest ? "text-red-500 dark:text-red-400"
+                                  : "text-muted-foreground"}`}>
+                                  {isLowest && "🥇 "}{fmt(price)}
+                                </span>}
+                          </td>
+                        );
+                      })}
+                      {/* Saving vs baseline */}
+                      <td className="px-4 py-2.5 text-right">
+                        <DeltaBadge val={
+                          row.saving_vs_baseline_pct != null
+                            ? -row.saving_vs_baseline_pct  // positive saving = negative delta
+                            : null
+                        } />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {kpis?.baseline_source === "median_of_bids" && (
+              <div className="flex items-center gap-2 border-t border-border px-4 py-2.5
+                text-xs text-muted-foreground">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                Baseline = median of all bids ({fmt(kpis.baseline)}).
+                Upload an RFP template to override.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Flat Bid Table ── */}
       {total > 0 && (
         <Card>
           <CardHeader className="pb-3">
@@ -252,8 +341,6 @@ const PricingPage: React.FC = () => {
                 All Bids
                 <Badge variant="secondary">{total} line items</Badge>
               </span>
-
-              {/* Page size selector */}
               <div className="flex items-center gap-2 text-sm font-normal">
                 <span className="text-muted-foreground text-xs">Show</span>
                 <select
@@ -272,19 +359,15 @@ const PricingPage: React.FC = () => {
               </div>
             </CardTitle>
           </CardHeader>
-
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm whitespace-nowrap">
                 <thead>
                   <tr className="border-b border-border bg-muted/40">
                     {visibleCols.map((col) => (
-                      <th
-                        key={col}
-                        onClick={() => toggleSort(col)}
+                      <th key={col} onClick={() => toggleSort(col)}
                         className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground
-                          whitespace-nowrap cursor-pointer hover:text-foreground select-none"
-                      >
+                          cursor-pointer hover:text-foreground select-none">
                         <span className="inline-flex items-center gap-1">
                           {colLabel(col)}
                           {sortCol === col
@@ -305,13 +388,13 @@ const PricingPage: React.FC = () => {
                           ? "bg-green-50/60 dark:bg-green-950/20"
                           : i % 2 === 0 ? "bg-background" : "bg-muted/10"}`}>
                       {visibleCols.map((col) => (
-                        <td key={col} className="px-4 py-2.5 whitespace-nowrap">
+                        <td key={col} className="px-4 py-2.5">
                           {col === "delta_pct"
                             ? <DeltaBadge val={row[col] as number | null} />
                             : col === "bid_position"
                             ? <span className={`text-xs font-medium
                                 ${row[col] === "🥇 Lowest" ? "text-green-700 dark:text-green-400"
-                                : row[col] === "Highest" ? "text-red-600 dark:text-red-400"
+                                : row[col] === "Highest"   ? "text-red-600 dark:text-red-400"
                                 : "text-muted-foreground"}`}>
                                 {String(row[col] ?? "—")}
                               </span>
@@ -330,24 +413,20 @@ const PricingPage: React.FC = () => {
               </table>
             </div>
 
-            {/* Pagination controls */}
+            {/* Pagination */}
             <div className="flex items-center justify-between border-t border-border px-4 py-3">
               <span className="text-xs text-muted-foreground">
-                Showing {offset + 1}–{Math.min(offset + pageSize, total)} of {total}
+                Showing {Math.min(offset + 1, total)}–{Math.min(offset + pageSize, total)} of {total}
               </span>
               <div className="flex gap-2">
-                <Button
-                  variant="outline" size="sm"
+                <Button variant="outline" size="sm"
                   disabled={offset === 0}
-                  onClick={() => setOffset((o) => Math.max(0, o - pageSize))}
-                >
+                  onClick={() => setOffset((o) => Math.max(0, o - pageSize))}>
                   Previous
                 </Button>
-                <Button
-                  variant="outline" size="sm"
+                <Button variant="outline" size="sm"
                   disabled={offset + pageSize >= total}
-                  onClick={() => setOffset((o) => o + pageSize)}
-                >
+                  onClick={() => setOffset((o) => o + pageSize)}>
                   Next
                 </Button>
               </div>
@@ -358,7 +437,6 @@ const PricingPage: React.FC = () => {
                 text-xs text-muted-foreground">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                 Baseline not provided — using median ({fmt(kpis.baseline)}) as reference.
-                Upload an RFP template with target prices to override.
               </div>
             )}
           </CardContent>
