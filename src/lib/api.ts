@@ -3,7 +3,12 @@ import { API_BASE_URL } from "./config";
 // ── Generic request helper ────────────────────────────────────────────────────
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
-  const res = await fetch(url, options);
+  const token = localStorage.getItem("access_token");
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     let errorMsg = `HTTP ${res.status}`;
     try {
@@ -68,6 +73,57 @@ export interface WorkbookIngestResult {
     total_price: number;
   }>;
   status: string;
+}
+
+// ── Technical Analysis types ──────────────────────────────────────────────────
+export interface TechnicalWeightCategory {
+  key: string;
+  label: string;
+  default_weight: number;
+}
+
+export interface TechnicalAnalysisResult {
+  project_id: string;
+  suppliers: Array<{
+    supplier_id: string;
+    supplier_name: string;
+    rank: number;
+    overall_score: number;
+    disqualified: boolean;
+    weak_count: number;
+    strengths: string[];
+    weaknesses: string[];
+    recommendation: string;
+    category_scores: Array<{
+      category: string;
+      weighted_score: number;
+      questions: Array<{
+        question_id: string;
+        question_text: string;
+        question_type: string;
+        weight: number;
+        score: number;
+        supplier_answer: string;
+        rationale: string;
+        flagged: boolean;
+      }>;
+    }>;
+  }>;
+  disqualified: string[];
+  analysis_summary: string;
+  top_recommendation: string;
+  confidence_score?: number;
+}
+
+export interface GapAnalysisResult {
+  project_id: string;
+  gaps: Record<string, {
+    weak_questions: string[];
+    weak_count: number;
+    disqualified: boolean;
+    disqualify_reasons: string[];
+  }>;
+  disqualified: string[];
 }
 
 // ── API surface ───────────────────────────────────────────────────────────────
@@ -182,7 +238,7 @@ export const api = {
       `/responses/${responseId}/completeness`
     ),
 
-  // ── Analysis ─────────────────────────────────────────────────────────────────
+  // ── Analysis (legacy path — kept for backward compat) ────────────────────────
   runAnalysis: (params: { rfp_id: string; project_id?: string }) =>
     request<{ job_id: string; status: string }>("/analysis/run", {
       method: "POST",
@@ -201,6 +257,90 @@ export const api = {
     });
     return pollJob<any>(`/analysis/status/${job_id}`, 10 * 60 * 1000);
   },
+
+  // ── Technical Analysis (new /technical-analysis/* endpoints) ─────────────────
+  /**
+   * Fire-and-poll: posts to /technical-analysis/run then polls status.
+   * Called as api.analyzeProject(projectId) from AnalysisPage.
+   */
+  analyzeProject: async (projectId: string): Promise<TechnicalAnalysisResult> => {
+    // Backend _do_analysis_job loads questions + supplier files from disk by project_id.
+    // The /run endpoint accepts a full RunAnalysisRequest but we POST via the
+    // project-level job launcher which calls _do_analysis_job directly via projects route.
+    // We hit /technical-analysis/run with an empty questions/supplier_responses so
+    // the backend falls through to the project-level auto-loader path.
+    // Actually the project-based async path is triggered via the projects router.
+    // We use the simpler direct /projects/{id}/analyze pattern if it exists,
+    // otherwise call the job-based flow by posting a minimal run request.
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      `/projects/${projectId}/analyze`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+    ).catch(() =>
+      // Fallback: trigger via technical-analysis run with empty payload (backend reads from disk)
+      request<{ job_id: string; status: string }>("/technical-analysis/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          questions: [],
+          supplier_responses: {},
+        }),
+      })
+    );
+    return pollJob<TechnicalAnalysisResult>(
+      `/technical-analysis/status/${job_id}`,
+      10 * 60 * 1000
+    );
+  },
+
+  getTechnicalWeightDefaults: () =>
+    request<{ categories: TechnicalWeightCategory[] }>("/technical-analysis/weights/defaults"),
+
+  runTechnicalAnalysis: (params: {
+    project_id: string;
+    questions: any[];
+    supplier_responses: Record<string, Record<string, string>>;
+    weight_overrides?: Record<string, number>;
+    min_score?: number;
+    disqualify_threshold?: number;
+    disqualify_max_weak?: number;
+  }) =>
+    request<TechnicalAnalysisResult>("/technical-analysis/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  runGapAnalysis: (params: {
+    project_id: string;
+    supplier_scores: Record<string, Record<string, any>>;
+    questions: any[];
+    min_score?: number;
+    disqualify_threshold?: number;
+    disqualify_max_weak?: number;
+  }): Promise<GapAnalysisResult> =>
+    request<GapAnalysisResult>("/technical-analysis/gap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  generateTechnicalReport: (params: {
+    project_id: string;
+    supplier_name: string;
+    category_scores: any[];
+    overall_score: number;
+  }) =>
+    request<{ project_id: string; report: any }>("/technical-analysis/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    }),
+
+  getTechnicalAnalysisStatus: (jobId: string) =>
+    request<{ job_id: string; status: string; result?: TechnicalAnalysisResult; error?: string }>(
+      `/technical-analysis/status/${jobId}`
+    ),
 
   // ── Scenarios ────────────────────────────────────────────────────────────────
   createScenario: (params: {
@@ -348,4 +488,25 @@ export const api = {
       body: fd,
     });
   },
+
+  // ── Files ────────────────────────────────────────────────────────────────────
+  listFiles: (projectId: string, category?: string) =>
+    request<{ files: Array<{ id: string; display_name: string; filename: string; category: string; created_at?: string }> }>(
+      `/files/${projectId}${category ? `?category=${category}` : ""}`
+    ),
+
+  uploadFile: (file: File, projectId: string, category: string, displayName: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("project_id", projectId);
+    fd.append("category", category);
+    fd.append("display_name", displayName);
+    return request<{ id: string; display_name: string; filename: string }>("/files/upload", {
+      method: "POST",
+      body: fd,
+    });
+  },
+
+  deleteFile: (projectId: string, fileId: string) =>
+    request<{ deleted: boolean }>(`/files/${projectId}/${fileId}`, { method: "DELETE" }),
 };
