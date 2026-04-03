@@ -353,15 +353,15 @@ export default function PricingPage() {
             const blob = await fetch(url).then(r => r.blob());
             const fd = new FormData();
             fd.append("file", blob, f.filename ?? f.display_name ?? "file");
-            const res = await fetch(`${API}/pricing/ingest`, {
+            const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
               method: "POST",
               headers: { Authorization: `Bearer ${token}` },
               body: fd,
             });
-            if (!res.ok) continue;
+            if (!res.ok) { console.warn("[auto-ingest] ingest failed", res.status, await res.text()); continue; }
             const data = await res.json();
-            const rows: any[] = data.line_items ?? data.rows ?? [];
-            const sName: string = data.supplier_name ?? f.filename ?? "Unknown";
+            const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
+            const sName: string = data.supplier_name ?? f.filename ?? f.display_name ?? "Unknown";
             if (rows.length) {
               setStaged(prev => {
                 if (prev.find(s => s.supplierName === sName)) return prev;
@@ -372,7 +372,7 @@ export default function PricingPage() {
                 }];
               });
             }
-          } catch(e) { console.warn("[auto-ingest]", e); }
+          } catch(e) { console.error("[auto-ingest] FAILED:", e, "file:", f.filename ?? (f as any).name); }
         }
         }).catch(()=>{});
     }
