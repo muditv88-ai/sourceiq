@@ -372,7 +372,7 @@ export default function PricingPage() {
               const sName: string = data.supplier_name ?? f.filename ?? f.display_name ?? "Unknown";
               if (rows.length) {
                 setStaged(prev => {
-                  if (prev.find(s => s.supplierName === sName)) return prev;
+                  // re-ingest allowed (guard removed for refresh support)
                   return [...prev, { supplierName: sName, rows, fileName: f.filename ?? f.display_name ?? "", sheetName: "", headerRow: 0 }];
                 });
               }
@@ -470,7 +470,7 @@ export default function PricingPage() {
               <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </div>
             <button
-              onClick={() => { setStaged([]); setReloadKey(k => k+1); }}
+              onClick={() => { setStaged([]); setReloadKey(k => k + 1); }}
               disabled={projectLoading || !projectId}
               title="Refresh tables"
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
