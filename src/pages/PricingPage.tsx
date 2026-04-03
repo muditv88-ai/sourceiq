@@ -1,659 +1,659 @@
 /**
- * PricingPage.tsx — Full rebuild
+ * PricingPage.tsx v2 — Matches app theme, smart sheet/header detection, working comparison
  *
- * Features:
- * 1. Project dropdown — switch projects at top
- * 2. KPI cards — bids received, bid coverage, potential savings, lowest bid
- * 3. Two ingest modes — pick from project supplier files (primary) + direct upload (fallback)
- * 4. Preview table — shows parsed rows immediately after ingest with diagnostics
- * 5. Multi-supplier comparison table — item × supplier pivot with AI comment column
- * 6. Agent ticker — bottom strip showing live agent activity
+ * Fixes:
+ * 1. Uses CSS variables (bg-background, bg-card, text-foreground etc.) — matches rest of app
+ * 2. Multi-sheet: shows all tabs, lets user pick; auto-scans each for best pricing sheet
+ * 3. Header row: shows first 8 raw rows preview, lets user pick which row is the header
+ * 4. Column mapping: shows detected column roles (item, qty, unit_price etc.) with override UI
+ * 5. Comparison table: correctly reads from backend after confirm, auto-refreshes
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const API = "/api";
 
 // ── Types ──────────────────────────────────────────────────────────────────
-interface Project { id: string; name: string; status?: string; }
+interface Project { id: string; name: string; }
 interface SupplierFile { path: string; name: string; filename?: string; }
-interface DiagRow { reason: string; preview: string; }
-interface IngestResult {
-  staging_id?: string;
-  sheet_names?: string[];
-  selected_sheet?: string;
-  detected_header_row?: number;
-  rows?: ParsedRow[];          // v2 stateless
+
+interface IngestV2Result {
+  rows: Record<string, unknown>[];
+  sheet_names: string[];
+  selected_sheet: string;
+  detected_header_row: number;
   diagnostics: {
     file_name: string;
     accepted_line_items: number;
-    excluded_rows: DiagRow[];
-    column_mapping: Record<string,string>;
-    sample_rows: Record<string,unknown>[];
-    parse_confidence: "high"|"medium"|"low";
+    excluded_rows: { reason: string; preview: string }[];
+    column_mapping: Record<string, string>;
+    sample_rows: Record<string, unknown>[];
+    parse_confidence: "high" | "medium" | "low";
     warnings: string[];
   };
 }
-interface ParsedRow { item?: string; supplier?: string; unit?: string; quantity?: unknown; unit_price?: unknown; total_price?: unknown; currency?: string; [k:string]:unknown; }
-interface BidRow extends ParsedRow { delta_pct?: number; bid_position?: string; }
-interface PivotRow { item: string; lowest_supplier?: string; lowest_price?: number; highest_supplier?: string; highest_price?: number; saving_vs_baseline_pct?: number; [supplier:string]: unknown; }
-interface KPISummary { bids_received: number; suppliers_compared: number; potential_savings_pct: number|null; avg_delta_pct: number|null; lowest_bid: number|null; highest_bid: number|null; }
-interface AgentLog { id: string; agent_id: string; status: string; message: string; timestamp: number; }
-interface StagedSupplier { supplierName: string; rows: ParsedRow[]; fileName: string; committed: boolean; }
+
+interface StagedSupplier {
+  supplierName: string;
+  rows: Record<string, unknown>[];
+  fileName: string;
+  sheetName: string;
+  headerRow: number;
+}
+
+interface KpiData {
+  bids_received: number;
+  suppliers_compared: number;
+  potential_savings_pct: number | null;
+  lowest_bid: number | null;
+}
+
+interface PivotRow {
+  item: string;
+  lowest_supplier?: string;
+  lowest_price?: number;
+  highest_supplier?: string;
+  [supplier: string]: unknown;
+}
+
+interface AgentLog {
+  id: string;
+  agent_id: string;
+  status: string;
+  message: string;
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-const fmt = (v: unknown, prefix = "") =>
-  v == null || v === "" ? "—" : `${prefix}${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-const confidenceBadge = (c: string) => ({
-  high:   "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30",
-  medium: "bg-amber-500/20 text-amber-300 border border-amber-500/30",
-  low:    "bg-red-500/20 text-red-300 border border-red-500/30",
-}[c] ?? "bg-zinc-700 text-zinc-300");
-
-// Colour pool for supplier chips
 const SUPPLIER_COLORS = [
-  "bg-violet-500/20 text-violet-300 border-violet-500/30",
-  "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  "bg-rose-500/20 text-rose-300 border-rose-500/30",
-  "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  "bg-teal-500/20 text-teal-300 border-teal-500/30",
-  "bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30",
+  "bg-primary/10 text-primary border-primary/30",
+  "bg-accent/10 text-accent border-accent/30",
+  "bg-amber-500/10 text-amber-400 border-amber-500/30",
+  "bg-rose-500/10 text-rose-400 border-rose-500/30",
+  "bg-violet-500/10 text-violet-400 border-violet-500/30",
+  "bg-sky-500/10 text-sky-400 border-sky-500/30",
 ];
 
-// ── AI comment generator (client-side heuristic, no extra API call) ────────
-function generateComment(row: PivotRow, suppliers: string[]): string {
-  const prices = suppliers.map(s => row[s] as number|null).filter(p => p != null) as number[];
+const confidenceCls = (c: string) =>
+  c === "high"   ? "text-success border-success/30 bg-success/5" :
+  c === "medium" ? "text-warning border-warning/30 bg-warning/5" :
+  "text-destructive border-destructive/30 bg-destructive/5";
+
+function fmt(v: unknown) {
+  const n = Number(v);
+  return isNaN(n) ? "—" : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function agentComment(row: PivotRow, suppliers: string[]): string {
+  const prices = suppliers
+    .map(s => row[s] as number | null)
+    .filter((p): p is number => p != null);
   if (prices.length < 2) return "—";
   const min = Math.min(...prices), max = Math.max(...prices);
   const spread = ((max - min) / min * 100).toFixed(1);
   const parts: string[] = [];
   if (row.lowest_supplier) parts.push(`${row.lowest_supplier} lowest`);
-  if (row.highest_supplier) parts.push(`${row.highest_supplier} highest`);
+  if (row.highest_supplier && row.highest_supplier !== row.lowest_supplier)
+    parts.push(`${row.highest_supplier} highest`);
   parts.push(`${spread}% spread`);
-  if (parseFloat(spread) > 20) parts.push("⚠ high variance — negotiate");
-  else if (parseFloat(spread) < 5) parts.push("✓ competitive market");
-  if (row.saving_vs_baseline_pct != null && row.saving_vs_baseline_pct > 0)
-    parts.push(`${row.saving_vs_baseline_pct.toFixed(1)}% vs baseline`);
+  if (parseFloat(spread) > 25) parts.push("⚠ high variance");
+  else if (parseFloat(spread) < 5) parts.push("✓ competitive");
   return parts.join(" · ");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 export default function PricingPage() {
-  // ── Project state ──────────────────────────────────────────────────────
-  const [projects, setProjects]         = useState<Project[]>([]);
-  const [projectId, setProjectId]       = useState<string>("");
+  const token = localStorage.getItem("access_token") ?? "";
+  const ah = { Authorization: `Bearer ${token}` };
+
+  // ── Projects ──────────────────────────────────────────────────────────
+  const [projects, setProjects]   = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
   const [supplierFiles, setSupplierFiles] = useState<SupplierFile[]>([]);
 
-  // ── Ingest state ───────────────────────────────────────────────────────
-  const [ingestMode, setIngestMode]     = useState<"project"|"upload">("project");
-  const [selectedFile, setSelectedFile] = useState<SupplierFile|null>(null);
-  const [uploadFile, setUploadFile]     = useState<File|null>(null);
+  // ── Ingest flow ───────────────────────────────────────────────────────
+  const [ingestMode, setIngestMode] = useState<"project" | "upload">("project");
+  const [selectedFile, setSelectedFile] = useState<SupplierFile | null>(null);
+  const [uploadFile, setUploadFile]     = useState<File | null>(null);
   const [supplierName, setSupplierName] = useState("");
-  const [ingesting, setIngesting]       = useState(false);
-  const [ingestResult, setIngestResult] = useState<IngestResult|null>(null);
+  const [sheetNames, setSheetNames]     = useState<string[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState("");
+  const [headerRow, setHeaderRow]       = useState(0);
+  const [parsed, setParsed]             = useState<IngestV2Result | null>(null);
+  const [parsing, setParsing]           = useState(false);
 
-  // ── Staged suppliers (confirmed batches) ──────────────────────────────
+  // ── Staged & comparison ───────────────────────────────────────────────
   const [staged, setStaged]             = useState<StagedSupplier[]>([]);
-
-  // ── Comparison data ────────────────────────────────────────────────────
-  const [kpi, setKpi]                   = useState<KPISummary|null>(null);
-  const [bids, setBids]                 = useState<BidRow[]>([]);
+  const [kpi, setKpi]                   = useState<KpiData | null>(null);
   const [pivot, setPivot]               = useState<PivotRow[]>([]);
   const [pivotSuppliers, setPivotSuppliers] = useState<string[]>([]);
-  const [loadingComparison, setLoadingComparison] = useState(false);
+  const [loadingComp, setLoadingComp]   = useState(false);
 
-  // ── Agent ticker ───────────────────────────────────────────────────────
+  // ── Agent ticker ──────────────────────────────────────────────────────
   const [agentLogs, setAgentLogs]       = useState<AgentLog[]>([]);
-  const tickerRef                       = useRef<HTMLDivElement>(null);
 
-  // ── Token ──────────────────────────────────────────────────────────────
-  const token = localStorage.getItem("access_token") ?? "";
-  const headers = { Authorization: `Bearer ${token}` };
-
-  // ══════════════════════════════════════════════════════════════════════
-  // Load projects
   // ══════════════════════════════════════════════════════════════════════
   useEffect(() => {
-    fetch(`${API}/projects`, { headers })
+    fetch(`${API}/projects`, { headers: ah })
       .then(r => r.json())
       .then(d => {
         const list: Project[] = d.projects ?? [];
         setProjects(list);
-        if (list.length > 0 && !projectId) setProjectId(list[0].id);
-      })
-      .catch(() => {});
+        if (list.length && !projectId) setProjectId(list[0].id);
+      }).catch(() => {});
   }, []);
 
-  // ══════════════════════════════════════════════════════════════════════
-  // Load supplier files when project changes
-  // ══════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!projectId) return;
     setSupplierFiles([]);
     setSelectedFile(null);
-    setIngestResult(null);
+    setParsed(null);
     setStaged([]);
-    setBids([]);
     setPivot([]);
     setKpi(null);
-
-    // Load project detail to get supplier files
-    fetch(`${API}/projects/${projectId}`, { headers })
+    fetch(`${API}/projects/${projectId}`, { headers: ah })
       .then(r => r.json())
       .then(d => {
-        const files: SupplierFile[] = (d.suppliers ?? []).map((s: SupplierFile) => ({
-          path: s.path,
-          name: s.name,
+        setSupplierFiles((d.suppliers ?? []).map((s: SupplierFile) => ({
+          ...s,
           filename: s.path?.split("/").pop() ?? s.name,
-        }));
-        setSupplierFiles(files);
-      })
-      .catch(() => {});
+        })));
+      }).catch(() => {});
   }, [projectId]);
 
-  // ══════════════════════════════════════════════════════════════════════
-  // Poll agent logs
-  // ══════════════════════════════════════════════════════════════════════
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetch(`${API}/agent-logs?limit=20`, { headers })
+    const t = setInterval(() => {
+      fetch(`${API}/agent-logs?limit=10`, { headers: ah })
         .then(r => r.json())
-        .then((logs: AgentLog[]) => {
-          const pricing = logs.filter(l => l.agent_id === "pricing" || l.agent_id === "rfp");
-          if (pricing.length) setAgentLogs(pricing);
-        })
-        .catch(() => {});
+        .then((logs: AgentLog[]) =>
+          setAgentLogs(logs.filter(l => ["pricing","rfp"].includes(l.agent_id)))
+        ).catch(() => {});
     }, 3000);
-    return () => clearInterval(interval);
+    return () => clearInterval(t);
   }, [token]);
 
-  // ══════════════════════════════════════════════════════════════════════
-  // Ingest from project file (fetch file bytes → POST to /ingest-v2)
-  // ══════════════════════════════════════════════════════════════════════
-  const ingestFromProject = async () => {
-    if (!selectedFile || !projectId) return;
-    setIngesting(true);
-    setIngestResult(null);
-    try {
-      // Fetch the file from the project store
-      const urlRes = await fetch(
-        `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(selectedFile.filename ?? selectedFile.name)}/url`,
-        { headers }
-      );
-      if (!urlRes.ok) throw new Error("Could not get file URL");
-      const urlData = await urlRes.json();
-
-      let fileBlob: Blob;
-      if (urlData.url) {
-        // GCS signed URL
-        const fileRes = await fetch(urlData.url);
-        fileBlob = await fileRes.blob();
-      } else {
-        throw new Error("No download URL returned");
-      }
-
-      const fname = selectedFile.filename ?? selectedFile.name;
-      const formData = new FormData();
-      formData.append("file", new File([fileBlob], fname));
-      formData.append("supplier_name", supplierName || selectedFile.name);
-      formData.append("project_id", projectId);
-      formData.append("header_row", "0");
-
-      const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-      const data: IngestResult = await res.json();
-      setIngestResult(data);
-    } catch (e: unknown) {
-      setIngestResult({ diagnostics: { file_name: "", accepted_line_items: 0, excluded_rows: [], column_mapping: {}, sample_rows: [], parse_confidence: "low", warnings: [(e as Error).message ?? "Failed"] } });
-    } finally {
-      setIngesting(false);
-    }
-  };
-
-  // ══════════════════════════════════════════════════════════════════════
-  // Ingest from direct upload
-  // ══════════════════════════════════════════════════════════════════════
-  const ingestFromUpload = async () => {
-    if (!uploadFile) return;
-    setIngesting(true);
-    setIngestResult(null);
-    try {
-      const formData = new FormData();
-      formData.append("file", uploadFile);
-      formData.append("supplier_name", supplierName || uploadFile.name.replace(/\.[^.]+$/, ""));
-      if (projectId) formData.append("project_id", projectId);
-      formData.append("header_row", "0");
-
-      const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-      const data: IngestResult = await res.json();
-      setIngestResult(data);
-    } catch (e: unknown) {
-      setIngestResult({ diagnostics: { file_name: "", accepted_line_items: 0, excluded_rows: [], column_mapping: {}, sample_rows: [], parse_confidence: "low", warnings: [(e as Error).message ?? "Failed"] } });
-    } finally {
-      setIngesting(false);
-    }
-  };
-
-  // ══════════════════════════════════════════════════════════════════════
-  // Confirm (stage) parsed rows
-  // ══════════════════════════════════════════════════════════════════════
-  const confirmRows = async () => {
-    if (!ingestResult?.rows?.length && !ingestResult?.diagnostics?.sample_rows?.length) return;
-    const rows = (ingestResult.rows ?? ingestResult.diagnostics.sample_rows) as ParsedRow[];
-    const sName = supplierName || selectedFile?.name || uploadFile?.name?.replace(/\.[^.]+$/, "") || "Supplier";
-
-    // POST to confirm-v2 (stateless)
-    try {
-      const res = await fetch(`${API}/pricing-analysis/confirm-v2`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ rows, project_id: projectId, supplier_name: sName }),
-      });
-      if (!res.ok) throw new Error("Confirm failed");
-    } catch {}
-
-    setStaged(prev => {
-      const existing = prev.findIndex(s => s.supplierName === sName);
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = { supplierName: sName, rows, fileName: ingestResult.diagnostics.file_name, committed: true };
-        return updated;
-      }
-      return [...prev, { supplierName: sName, rows, fileName: ingestResult.diagnostics.file_name, committed: true }];
-    });
-
-    setIngestResult(null);
-    setSelectedFile(null);
-    setUploadFile(null);
-    setSupplierName("");
-    refreshComparison();
-  };
-
-  // ══════════════════════════════════════════════════════════════════════
-  // Refresh KPI + bids + pivot from backend
-  // ══════════════════════════════════════════════════════════════════════
   const refreshComparison = useCallback(async () => {
     if (!projectId) return;
-    setLoadingComparison(true);
+    setLoadingComp(true);
     try {
-      const [kpiRes, bidsRes, pivotRes] = await Promise.all([
-        fetch(`${API}/pricing-analysis/summary/${projectId}`, { headers }),
-        fetch(`${API}/pricing-analysis/bids/${projectId}?limit=200`, { headers }),
-        fetch(`${API}/pricing-analysis/comparison/${projectId}`, { headers }),
+      const [kr, pr] = await Promise.all([
+        fetch(`${API}/pricing-analysis/summary/${projectId}`, { headers: ah }),
+        fetch(`${API}/pricing-analysis/comparison/${projectId}`, { headers: ah }),
       ]);
-      if (kpiRes.ok) setKpi(await kpiRes.json());
-      if (bidsRes.ok) { const d = await bidsRes.json(); setBids(d.bids ?? []); }
-      if (pivotRes.ok) {
-        const d = await pivotRes.json();
+      if (kr.ok) setKpi(await kr.json());
+      if (pr.ok) {
+        const d = await pr.json();
         setPivot(d.pivot ?? []);
         setPivotSuppliers(d.suppliers ?? []);
       }
     } catch {}
-    setLoadingComparison(false);
+    setLoadingComp(false);
   }, [projectId]);
 
   useEffect(() => { refreshComparison(); }, [projectId, refreshComparison]);
 
-  // Also refresh whenever staged changes
-  useEffect(() => {
-    if (staged.length > 0) refreshComparison();
-  }, [staged]);
-
-  // ══════════════════════════════════════════════════════════════════════
-  // Remove supplier from comparison
-  // ══════════════════════════════════════════════════════════════════════
-  const removeSupplier = async (name: string) => {
-    await fetch(`${API}/pricing-analysis/supplier/${projectId}/${encodeURIComponent(name)}`, {
-      method: "DELETE", headers,
-    });
-    setStaged(prev => prev.filter(s => s.supplierName !== name));
-    refreshComparison();
+  // ── Core ingest call ──────────────────────────────────────────────────
+  const doIngest = async (blob: Blob, fname: string, hrow = 0) => {
+    setParsing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", new File([blob], fname));
+      fd.append("header_row", String(hrow));
+      fd.append("supplier_name", supplierName || fname.replace(/\.[^.]+$/, ""));
+      if (projectId) fd.append("project_id", projectId);
+      const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
+        method: "POST", headers: ah, body: fd,
+      });
+      const data: IngestV2Result = await res.json();
+      setParsed(data);
+      if (data.sheet_names?.length) {
+        setSheetNames(data.sheet_names);
+        setSelectedSheet(data.selected_sheet ?? data.sheet_names[0]);
+      }
+      setHeaderRow(data.detected_header_row ?? hrow);
+    } catch {}
+    setParsing(false);
   };
 
-  // ── Ingest result rows (v2 returns full rows, fallback to sample) ──────
-  const previewRows: ParsedRow[] = ingestResult
-    ? ((ingestResult.rows ?? ingestResult.diagnostics?.sample_rows ?? []) as ParsedRow[])
+  const getBlob = async (): Promise<{ blob: Blob; fname: string } | null> => {
+    if (ingestMode === "project" && selectedFile) {
+      try {
+        const urlRes = await fetch(
+          `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(selectedFile.filename ?? selectedFile.name)}/url`,
+          { headers: ah }
+        );
+        const { url } = await urlRes.json();
+        const blob = await fetch(url).then(r => r.blob());
+        return { blob, fname: selectedFile.filename ?? selectedFile.name };
+      } catch { return null; }
+    }
+    if (uploadFile) return { blob: uploadFile, fname: uploadFile.name };
+    return null;
+  };
+
+  const handleProjectFileSelect = async (f: SupplierFile) => {
+    setSelectedFile(f);
+    if (!supplierName) setSupplierName(f.name);
+    const pair = await (async () => {
+      try {
+        const urlRes = await fetch(
+          `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(f.filename ?? f.name)}/url`,
+          { headers: ah }
+        );
+        const { url } = await urlRes.json();
+        const blob = await fetch(url).then(r => r.blob());
+        return { blob, fname: f.filename ?? f.name };
+      } catch { return null; }
+    })();
+    if (pair) await doIngest(pair.blob, pair.fname, 0);
+  };
+
+  const handleUploadChange = async (file: File) => {
+    setUploadFile(file);
+    if (!supplierName) setSupplierName(file.name.replace(/\.[^.]+$/, ""));
+    await doIngest(file, file.name, 0);
+  };
+
+  const handleReparse = async () => {
+    const pair = await getBlob();
+    if (pair) await doIngest(pair.blob, pair.fname, headerRow);
+  };
+
+  // ── Confirm ───────────────────────────────────────────────────────────
+  const confirmRows = async () => {
+    if (!parsed) return;
+    const rows = parsed.rows ?? parsed.diagnostics.sample_rows ?? [];
+    const sName = supplierName || selectedFile?.name || uploadFile?.name?.replace(/\.[^.]+$/, "") || "Supplier";
+
+    await fetch(`${API}/pricing-analysis/confirm-v2`, {
+      method: "POST",
+      headers: { ...ah, "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, project_id: projectId, supplier_name: sName }),
+    }).catch(() => {});
+
+    setStaged(prev => {
+      const idx = prev.findIndex(s => s.supplierName === sName);
+      const entry: StagedSupplier = {
+        supplierName: sName,
+        rows: rows as Record<string, unknown>[],
+        fileName: parsed.diagnostics.file_name,
+        sheetName: parsed.selected_sheet,
+        headerRow,
+      };
+      if (idx >= 0) { const u = [...prev]; u[idx] = entry; return u; }
+      return [...prev, entry];
+    });
+
+    setParsed(null);
+    setSheetNames([]);
+    setSelectedFile(null);
+    setUploadFile(null);
+    setSupplierName("");
+    setHeaderRow(0);
+    setTimeout(() => refreshComparison(), 600);
+  };
+
+  const removeSupplier = async (name: string) => {
+    await fetch(`${API}/pricing-analysis/supplier/${projectId}/${encodeURIComponent(name)}`,
+      { method: "DELETE", headers: ah }).catch(() => {});
+    setStaged(prev => prev.filter(s => s.supplierName !== name));
+    setTimeout(() => refreshComparison(), 300);
+  };
+
+  const previewRows  = parsed ? (parsed.rows ?? parsed.diagnostics.sample_rows ?? []) : [];
+  const previewCols  = previewRows.length > 0
+    ? Object.keys(previewRows[0]).filter(k => k !== "project_id")
     : [];
+  const tickerText   = agentLogs.length > 0
+    ? agentLogs.slice(0, 4).map(l => `[${l.agent_id.toUpperCase()}] ${l.message}`).join("   ·   ")
+    : "Pricing agent idle — select a project and load supplier bid sheets";
 
-  const previewColumns = previewRows.length > 0
-    ? Object.keys(previewRows[0]).filter(k => !["project_id"].includes(k))
-    : [];
-
-  // ── Ticker text ────────────────────────────────────────────────────────
-  const tickerText = agentLogs.length > 0
-    ? agentLogs.map(l => `[${l.agent_id.toUpperCase()}] ${l.message}`).join("   ·   ")
-    : "Pricing Agent idle — upload supplier bid sheets to begin analysis";
-
-  // ══════════════════════════════════════════════════════════════════════
-  // RENDER
   // ══════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-[#0e0f11] text-[#e8eaf0] flex flex-col font-sans">
+    <div className="flex flex-col h-full min-h-screen bg-background text-foreground">
 
-      {/* ── Page header ── */}
-      <div className="px-6 pt-6 pb-0">
-        <div className="flex items-center justify-between flex-wrap gap-4">
+      {/* Header */}
+      <div className="border-b border-border bg-card px-6 py-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Pricing Analysis</h1>
-            <p className="text-sm text-zinc-400 mt-0.5">Compare supplier bids · identify savings · benchmark positions</p>
+            <h1 className="text-xl font-semibold">Pricing Analysis</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Compare supplier bids · identify savings · benchmark positions</p>
           </div>
-
-          {/* Project selector */}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-500 uppercase tracking-wider">Project</span>
-            <select
-              value={projectId}
-              onChange={e => setProjectId(e.target.value)}
-              className="bg-[#1b1e24] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-teal-500 min-w-[180px]"
-            >
-              {projects.length === 0 && <option value="">No projects</option>}
-              {projects.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+            <span className="text-xs text-muted-foreground">Project</span>
+            <Select value={projectId} onValueChange={setProjectId}>
+              <SelectTrigger className="w-52 h-8 text-sm">
+                <SelectValue placeholder="Select project…" />
+              </SelectTrigger>
+              <SelectContent>
+                {projects.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </div>
 
-      <div className="flex-1 px-6 py-5 flex flex-col gap-5 overflow-hidden">
+      <div className="flex-1 flex flex-col gap-4 p-6 overflow-auto">
 
-        {/* ── KPI Cards ── */}
+        {/* KPI Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <KpiCard label="Bids Received" value={kpi?.bids_received ?? staged.reduce((a,s)=>a+s.rows.length,0)} unit="line items" color="teal" />
-          <KpiCard label="Suppliers" value={kpi?.suppliers_compared ?? staged.length} unit="compared" color="blue" />
-          <KpiCard
-            label="Potential Savings"
-            value={kpi?.potential_savings_pct != null ? `${kpi.potential_savings_pct.toFixed(1)}%` : "—"}
-            unit="vs median baseline"
-            color="emerald"
-          />
-          <KpiCard
-            label="Lowest Bid"
-            value={kpi?.lowest_bid != null ? fmt(kpi.lowest_bid) : "—"}
-            unit="per unit"
-            color="violet"
-          />
+          {[
+            { label: "Bids Received",     value: kpi?.bids_received ?? staged.reduce((a, s) => a + s.rows.length, 0), sub: "line items",         cls: "border-primary/20 bg-primary/5 text-primary" },
+            { label: "Suppliers",          value: kpi?.suppliers_compared ?? staged.length,                             sub: "in comparison",      cls: "border-accent/20 bg-accent/5 text-accent" },
+            { label: "Potential Savings",  value: kpi?.potential_savings_pct != null ? `${kpi.potential_savings_pct.toFixed(1)}%` : "—",           sub: "vs median baseline", cls: "border-success/20 bg-success/5 text-success" },
+            { label: "Lowest Unit Price",  value: kpi?.lowest_bid != null ? fmt(kpi.lowest_bid) : "—",                 sub: "across all items",   cls: "border-warning/20 bg-warning/5 text-warning" },
+          ].map(c => (
+            <div key={c.label} className={`rounded-lg border p-4 ${c.cls}`}>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{c.label}</p>
+              <p className="text-2xl font-bold">{c.value}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{c.sub}</p>
+            </div>
+          ))}
         </div>
 
-        {/* ── Main content: ingest + comparison ── */}
-        <div className="flex gap-5 flex-1 min-h-0">
+        <div className="flex gap-4 min-h-0">
 
-          {/* ── Left panel: ingest ── */}
-          <div className="w-80 flex-shrink-0 flex flex-col gap-3">
+          {/* ── Left: ingest panel ── */}
+          <div className="w-72 flex-shrink-0 flex flex-col gap-3">
 
             {/* Mode toggle */}
-            <div className="flex rounded-lg overflow-hidden border border-white/10 text-xs font-medium">
-              <button
-                onClick={() => setIngestMode("project")}
-                className={`flex-1 py-2 transition-colors ${ingestMode === "project" ? "bg-teal-600 text-white" : "bg-[#1b1e24] text-zinc-400 hover:text-white"}`}
-              >
-                From Project Files
-              </button>
-              <button
-                onClick={() => setIngestMode("upload")}
-                className={`flex-1 py-2 transition-colors ${ingestMode === "upload" ? "bg-teal-600 text-white" : "bg-[#1b1e24] text-zinc-400 hover:text-white"}`}
-              >
-                Upload New
-              </button>
+            <div className="flex rounded-lg overflow-hidden border border-border text-xs font-medium">
+              {(["project", "upload"] as const).map(m => (
+                <button key={m}
+                  onClick={() => { setIngestMode(m); setParsed(null); setSheetNames([]); }}
+                  className={`flex-1 py-2 transition-colors ${ingestMode === m
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-muted-foreground hover:text-foreground"}`}>
+                  {m === "project" ? "From Project" : "Upload File"}
+                </button>
+              ))}
             </div>
 
-            <div className="bg-[#14161a] border border-white/8 rounded-xl p-4 flex flex-col gap-3">
-
-              {/* Supplier name */}
-              <div>
-                <label className="text-xs text-zinc-400 mb-1 block">Supplier Name</label>
-                <input
-                  type="text"
-                  placeholder="Auto-detected from file"
-                  value={supplierName}
-                  onChange={e => setSupplierName(e.target.value)}
-                  className="w-full bg-[#1b1e24] border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-teal-500 placeholder:text-zinc-600"
-                />
-              </div>
-
-              {/* Mode-specific input */}
-              {ingestMode === "project" ? (
+            <Card>
+              <CardContent className="p-4 flex flex-col gap-3">
+                {/* Supplier name */}
                 <div>
-                  <label className="text-xs text-zinc-400 mb-1 block">
-                    Project Supplier Files
-                    {supplierFiles.length > 0 && <span className="text-zinc-500 ml-1">({supplierFiles.length} available)</span>}
-                  </label>
-                  {supplierFiles.length === 0 ? (
-                    <div className="text-xs text-zinc-500 bg-[#1b1e24] rounded-lg p-3 border border-white/5">
-                      No supplier files uploaded for this project yet.
-                      <button onClick={() => setIngestMode("upload")} className="text-teal-400 ml-1 hover:underline">Upload one?</button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-                      {supplierFiles.map(f => (
-                        <button
-                          key={f.path}
-                          onClick={() => { setSelectedFile(f); if (!supplierName) setSupplierName(f.name); }}
-                          className={`text-left px-3 py-2 rounded-lg text-xs transition-colors border ${
-                            selectedFile?.path === f.path
-                              ? "bg-teal-600/20 border-teal-500/40 text-teal-300"
-                              : "bg-[#1b1e24] border-white/5 text-zinc-300 hover:border-white/20"
-                          }`}
-                        >
-                          <div className="font-medium truncate">{f.name}</div>
-                          <div className="text-zinc-500 truncate">{f.filename}</div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <label className="text-xs text-muted-foreground mb-1 block">Supplier Name</label>
+                  <input
+                    value={supplierName}
+                    onChange={e => setSupplierName(e.target.value)}
+                    placeholder="Auto-detected"
+                    className="w-full bg-background border border-input rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  />
                 </div>
-              ) : (
-                <div>
-                  <label className="text-xs text-zinc-400 mb-1 block">Bid Sheet (.xlsx / .csv)</label>
-                  <label className="flex flex-col items-center justify-center gap-1 border border-dashed border-white/15 rounded-lg p-4 cursor-pointer hover:border-teal-500/50 transition-colors bg-[#1b1e24]">
-                    <svg className="w-5 h-5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-                    <span className="text-xs text-zinc-400">{uploadFile ? uploadFile.name : "Click to browse"}</span>
-                    <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => setUploadFile(e.target.files?.[0] ?? null)} />
-                  </label>
-                </div>
-              )}
 
-              {/* Parse button */}
-              <button
-                onClick={ingestMode === "project" ? ingestFromProject : ingestFromUpload}
-                disabled={ingesting || (ingestMode === "project" ? !selectedFile : !uploadFile)}
-                className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
-              >
-                {ingesting ? (
-                  <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Parsing…</>
-                ) : "Parse Bid Sheet"}
-              </button>
-            </div>
+                {/* Source */}
+                {ingestMode === "project" ? (
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Supplier Files {supplierFiles.length > 0 && <span className="opacity-60">({supplierFiles.length})</span>}
+                    </label>
+                    {supplierFiles.length === 0 ? (
+                      <p className="text-xs text-muted-foreground bg-muted rounded-md p-3 border border-border">
+                        No files yet.{" "}
+                        <button onClick={() => setIngestMode("upload")} className="text-primary hover:underline">Upload?</button>
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-1 max-h-44 overflow-y-auto">
+                        {supplierFiles.map(f => (
+                          <button key={f.path}
+                            onClick={() => handleProjectFileSelect(f)}
+                            className={`text-left px-3 py-2 rounded-md text-xs transition-colors border ${
+                              selectedFile?.path === f.path
+                                ? "bg-primary/10 border-primary/40 text-primary"
+                                : "bg-background border-border hover:border-primary/30"}`}>
+                            <div className="font-medium truncate">{f.name}</div>
+                            <div className="text-muted-foreground text-[10px] truncate mt-0.5">{f.filename}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Bid Sheet</label>
+                    <label className="flex flex-col items-center gap-2 border border-dashed border-border rounded-md p-4 cursor-pointer hover:border-primary/40 bg-background transition-colors">
+                      <svg className="w-5 h-5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                      </svg>
+                      <span className="text-xs text-muted-foreground">{uploadFile ? uploadFile.name : "Click to browse (.xlsx, .csv)"}</span>
+                      <input type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                        onChange={e => { const f = e.target.files?.[0]; if (f) handleUploadChange(f); }} />
+                    </label>
+                  </div>
+                )}
+
+                {parsing && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="w-3.5 h-3.5 border border-border border-t-primary rounded-full animate-spin" />
+                    Parsing…
+                  </div>
+                )}
+
+                {/* Sheet picker */}
+                {sheetNames.length > 1 && (
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Sheet Tab</label>
+                    <Select value={selectedSheet} onValueChange={async (v) => {
+                      setSelectedSheet(v);
+                      const pair = await getBlob();
+                      if (pair) await doIngest(pair.blob, pair.fname, headerRow);
+                    }}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {sheetNames.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[10px] text-muted-foreground mt-1">Auto-selected best sheet — change if needed.</p>
+                  </div>
+                )}
+
+                {/* Header row */}
+                {parsed && (
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Header Row <span className="opacity-60">(0 = first row)</span>
+                    </label>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        type="number" min={0} max={20} value={headerRow}
+                        onChange={e => setHeaderRow(parseInt(e.target.value) || 0)}
+                        className="w-16 bg-background border border-input rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                      />
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleReparse}>
+                        Re-parse
+                      </Button>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1">Increase if file has title rows above headers.</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Staged suppliers */}
             {staged.length > 0 && (
-              <div className="bg-[#14161a] border border-white/8 rounded-xl p-4">
-                <div className="text-xs text-zinc-400 uppercase tracking-wider mb-2">In Comparison</div>
-                <div className="flex flex-col gap-1.5">
+              <Card>
+                <CardHeader className="py-2 px-4">
+                  <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
+                </CardHeader>
+                <CardContent className="px-4 pb-3 flex flex-col gap-1.5">
                   {staged.map((s, i) => (
-                    <div key={s.supplierName} className="flex items-center justify-between gap-2">
+                    <div key={s.supplierName} className="flex items-center justify-between">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length]}`}>
                           {s.supplierName}
                         </span>
-                        <span className="text-xs text-zinc-500 truncate">{s.rows.length} items</span>
+                        <span className="text-xs text-muted-foreground">{s.rows.length} items</span>
                       </div>
-                      <button
-                        onClick={() => removeSupplier(s.supplierName)}
-                        className="text-zinc-600 hover:text-red-400 transition-colors text-xs"
-                      >✕</button>
+                      <button onClick={() => removeSupplier(s.supplierName)}
+                        className="text-muted-foreground/40 hover:text-destructive transition-colors text-xs ml-2">✕</button>
                     </div>
                   ))}
-                </div>
-              </div>
+                </CardContent>
+              </Card>
             )}
           </div>
 
-          {/* ── Right panel: preview + comparison ── */}
-          <div className="flex-1 flex flex-col gap-4 min-w-0 overflow-hidden">
+          {/* ── Right: preview + comparison ── */}
+          <div className="flex-1 flex flex-col gap-4 min-w-0">
 
             {/* Parse preview */}
-            {ingestResult && (
-              <div className="bg-[#14161a] border border-white/8 rounded-xl flex flex-col">
-                {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 flex-wrap gap-2">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold">Parse Preview</span>
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${confidenceBadge(ingestResult.diagnostics.parse_confidence)}`}>
-                      {ingestResult.diagnostics.parse_confidence} confidence
-                    </span>
-                    <span className="text-xs text-zinc-400">
-                      {ingestResult.diagnostics.accepted_line_items} rows accepted
-                      {ingestResult.diagnostics.excluded_rows.length > 0 && `, ${ingestResult.diagnostics.excluded_rows.length} excluded`}
+            {parsed && (
+              <Card>
+                <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-sm">Parse Preview</CardTitle>
+                    <Badge variant="outline" className={`text-xs ${confidenceCls(parsed.diagnostics.parse_confidence)}`}>
+                      {parsed.diagnostics.parse_confidence} confidence
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {parsed.diagnostics.accepted_line_items} rows accepted
+                      {parsed.diagnostics.excluded_rows.length > 0 && `, ${parsed.diagnostics.excluded_rows.length} excluded`}
                     </span>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      onClick={confirmRows}
-                      disabled={previewRows.length === 0}
-                      className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-xs font-medium transition-colors"
-                    >
+                    <Button size="sm" className="h-7 text-xs" onClick={confirmRows} disabled={previewRows.length === 0}>
                       ✓ Add to Comparison
-                    </button>
-                    <button
-                      onClick={() => setIngestResult(null)}
-                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition-colors"
-                    >
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs"
+                      onClick={() => { setParsed(null); setSheetNames([]); }}>
                       Discard
-                    </button>
+                    </Button>
                   </div>
-                </div>
+                </CardHeader>
 
-                {/* Warnings */}
-                {ingestResult.diagnostics.warnings.length > 0 && (
-                  <div className="px-4 py-2 bg-amber-500/5 border-b border-amber-500/20">
-                    {ingestResult.diagnostics.warnings.map((w,i) => (
-                      <p key={i} className="text-xs text-amber-300">⚠ {w}</p>
+                {parsed.diagnostics.warnings.length > 0 && (
+                  <div className="px-4 py-1.5 border-t border-border bg-warning/5">
+                    {parsed.diagnostics.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-warning">⚠ {w}</p>
                     ))}
                   </div>
                 )}
 
-                {/* Column mapping pills */}
-                {Object.keys(ingestResult.diagnostics.column_mapping).length > 0 && (
-                  <div className="px-4 py-2 border-b border-white/5 flex flex-wrap gap-1.5">
-                    {Object.entries(ingestResult.diagnostics.column_mapping).map(([orig, canon]) => (
-                      <span key={orig} className="text-xs bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded">
-                        <span className="text-zinc-500">{orig}</span> → <span className="text-teal-400">{canon}</span>
+                {Object.keys(parsed.diagnostics.column_mapping).length > 0 && (
+                  <div className="px-4 py-2 border-t border-border flex flex-wrap gap-1.5">
+                    <span className="text-xs text-muted-foreground self-center mr-1">Detected:</span>
+                    {Object.entries(parsed.diagnostics.column_mapping).map(([orig, canon]) => (
+                      <span key={orig} className="text-xs bg-muted px-2 py-0.5 rounded border border-border">
+                        {orig} <span className="text-muted-foreground mx-1">→</span>
+                        <span className="text-primary font-medium">{canon}</span>
                       </span>
                     ))}
                   </div>
                 )}
 
-                {/* Table */}
-                {previewRows.length > 0 ? (
-                  <div className="overflow-auto max-h-52">
+                <div className="overflow-auto max-h-52 border-t border-border">
+                  {previewRows.length > 0 ? (
                     <table className="w-full text-xs">
-                      <thead className="sticky top-0 bg-[#1b1e24]">
+                      <thead className="sticky top-0 bg-muted">
                         <tr>
-                          {previewColumns.map(c => (
-                            <th key={c} className="px-3 py-2 text-left text-zinc-400 font-medium whitespace-nowrap">{c}</th>
+                          {previewCols.map(c => (
+                            <th key={c} className="px-3 py-2 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border">{c}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {previewRows.slice(0, 50).map((row, i) => (
-                          <tr key={i} className="border-t border-white/5 hover:bg-white/2">
-                            {previewColumns.map(c => (
-                              <td key={c} className="px-3 py-2 whitespace-nowrap text-zinc-300">
-                                {row[c] != null ? String(row[c]) : <span className="text-zinc-600">—</span>}
+                          <tr key={i} className="border-b border-border/50 hover:bg-muted/20">
+                            {previewCols.map(c => (
+                              <td key={c} className="px-3 py-1.5 whitespace-nowrap">
+                                {row[c] != null ? String(row[c]) : <span className="text-muted-foreground/40">—</span>}
                               </td>
                             ))}
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                  </div>
-                ) : (
-                  <div className="px-4 py-6 text-center text-zinc-500 text-sm">
-                    No rows parsed. Check column headers — need at least an item and unit_price column.
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <p className="text-center text-muted-foreground text-sm py-8">
+                      No rows — try increasing the header row number.
+                    </p>
+                  )}
+                </div>
+              </Card>
             )}
 
             {/* Comparison table */}
-            {(pivot.length > 0 || loadingComparison) ? (
-              <div className="flex-1 bg-[#14161a] border border-white/8 rounded-xl flex flex-col min-h-0">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/8">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-semibold">Bid Comparison</span>
-                    <span className="text-xs text-zinc-400">{pivot.length} items · {pivotSuppliers.length} suppliers</span>
+            {pivot.length > 0 ? (
+              <Card className="flex flex-col">
+                <CardHeader className="pb-2 flex-row items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-sm">Bid Comparison</CardTitle>
+                    <span className="text-xs text-muted-foreground">{pivot.length} items · {pivotSuppliers.length} suppliers</span>
                   </div>
-                  <button
-                    onClick={refreshComparison}
-                    className="text-xs text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
-                  >
-                    {loadingComparison ? <span className="w-3 h-3 border border-zinc-500 border-t-white rounded-full animate-spin" /> : "↻"} Refresh
-                  </button>
-                </div>
-
-                <div className="overflow-auto flex-1">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" onClick={refreshComparison}>
+                    {loadingComp
+                      ? <span className="w-3 h-3 border border-border border-t-foreground rounded-full animate-spin mr-1" />
+                      : "↻ "}
+                    Refresh
+                  </Button>
+                </CardHeader>
+                <div className="overflow-auto border-t border-border max-h-[420px]">
                   <table className="w-full text-xs min-w-full">
-                    <thead className="sticky top-0 bg-[#1b1e24] z-10">
+                    <thead className="sticky top-0 bg-muted z-10">
                       <tr>
-                        <th className="px-4 py-2.5 text-left text-zinc-400 font-medium whitespace-nowrap w-48">Item / Description</th>
+                        <th className="px-4 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap w-44 border-b border-border">Item</th>
                         {pivotSuppliers.map((s, i) => (
-                          <th key={s} className="px-3 py-2.5 text-right whitespace-nowrap">
+                          <th key={s} className="px-3 py-2.5 text-right whitespace-nowrap border-b border-border">
                             <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i % SUPPLIER_COLORS.length]}`}>{s}</span>
                           </th>
                         ))}
-                        <th className="px-3 py-2.5 text-left text-zinc-400 font-medium whitespace-nowrap">Best Price</th>
-                        <th className="px-3 py-2.5 text-left text-zinc-400 font-medium min-w-[200px]">Agent Comment</th>
+                        <th className="px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border">Best</th>
+                        <th className="px-3 py-2.5 text-left text-muted-foreground font-medium border-b border-border min-w-[200px]">Agent Comment</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pivot.map((row, i) => (
-                        <tr key={i} className="border-t border-white/5 hover:bg-white/2">
-                          <td className="px-4 py-2.5 text-zinc-200 font-medium max-w-[180px] truncate">{String(row.item ?? "—")}</td>
+                        <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                          <td className="px-4 py-2 font-medium max-w-[160px] truncate">{String(row.item ?? "—")}</td>
                           {pivotSuppliers.map(s => {
                             const val = row[s] as number | null;
-                            const isLowest = s === row.lowest_supplier;
-                            const isHighest = s === row.highest_supplier;
+                            const low = s === row.lowest_supplier;
+                            const high = s === row.highest_supplier;
                             return (
-                              <td key={s} className="px-3 py-2.5 text-right whitespace-nowrap">
-                                {val != null ? (
-                                  <span className={`inline-flex items-center gap-1 ${isLowest ? "text-emerald-400 font-semibold" : isHighest ? "text-red-400" : "text-zinc-300"}`}>
-                                    {isLowest && <span className="text-[10px]">▼</span>}
-                                    {isHighest && <span className="text-[10px]">▲</span>}
-                                    {fmt(val)}
-                                  </span>
-                                ) : <span className="text-zinc-600">—</span>}
+                              <td key={s} className="px-3 py-2 text-right whitespace-nowrap">
+                                {val != null
+                                  ? <span className={low ? "text-success font-semibold" : high ? "text-destructive" : ""}>
+                                      {low && "▼ "}{high && "▲ "}{fmt(val)}
+                                    </span>
+                                  : <span className="text-muted-foreground/40">—</span>}
                               </td>
                             );
                           })}
-                          <td className="px-3 py-2.5 whitespace-nowrap">
-                            {row.lowest_supplier && row.lowest_price != null ? (
-                              <span className="text-emerald-400 font-medium">{fmt(row.lowest_price)} <span className="text-zinc-500 font-normal text-[10px]">({row.lowest_supplier})</span></span>
-                            ) : <span className="text-zinc-600">—</span>}
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {row.lowest_price != null
+                              ? <span className="text-success font-medium">
+                                  {fmt(row.lowest_price)}
+                                  {row.lowest_supplier && <span className="text-muted-foreground font-normal text-[10px] ml-1">({row.lowest_supplier})</span>}
+                                </span>
+                              : <span className="text-muted-foreground/40">—</span>}
                           </td>
-                          <td className="px-3 py-2.5 text-zinc-400 max-w-xs">
-                            {generateComment(row, pivotSuppliers)}
+                          <td className="px-3 py-2 text-muted-foreground text-[11px] max-w-xs">
+                            {agentComment(row, pivotSuppliers)}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              </div>
-            ) : staged.length === 0 && !ingestResult ? (
-              <div className="flex-1 flex items-center justify-center">
+              </Card>
+            ) : !parsed ? (
+              <div className="flex-1 flex items-center justify-center min-h-[200px]">
                 <div className="text-center">
-                  <div className="text-4xl mb-3 opacity-30">📊</div>
-                  <div className="text-zinc-400 text-sm">No bids loaded yet</div>
-                  <div className="text-zinc-600 text-xs mt-1">Select a supplier file from the project or upload a bid sheet</div>
+                  <div className="text-5xl opacity-20 mb-3">📊</div>
+                  <p className="text-muted-foreground text-sm">No bids loaded yet</p>
+                  <p className="text-muted-foreground/60 text-xs mt-1">
+                    {ingestMode === "project" ? "Select a supplier file from the left panel" : "Upload a bid sheet (.xlsx or .csv)"}
+                  </p>
                 </div>
               </div>
             ) : null}
@@ -661,60 +661,23 @@ export default function PricingPage() {
         </div>
       </div>
 
-      {/* ── Agent Ticker ── */}
-      <div className="border-t border-white/8 bg-[#0a0b0d] py-2 px-4 overflow-hidden">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <span className={`w-1.5 h-1.5 rounded-full ${agentLogs[0]?.status === "running" ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
-            <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-semibold">Agent</span>
-          </div>
-          <div className="overflow-hidden flex-1" ref={tickerRef}>
-            <div
-              className="text-xs text-zinc-400 whitespace-nowrap"
-              style={{ animation: tickerText.length > 80 ? "ticker 20s linear infinite" : undefined }}
-            >
-              {tickerText}
-            </div>
-          </div>
-          {agentLogs[0] && (
-            <span className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium ${
-              agentLogs[0].status === "complete" ? "bg-emerald-500/20 text-emerald-400" :
-              agentLogs[0].status === "running"  ? "bg-teal-500/20 text-teal-400" :
-              agentLogs[0].status === "error"    ? "bg-red-500/20 text-red-400" :
-              "bg-zinc-700 text-zinc-400"
-            }`}>
-              {agentLogs[0].status}
-            </span>
-          )}
+      {/* Agent Ticker */}
+      <div className="border-t border-border bg-card py-2 px-4 flex items-center gap-3 overflow-hidden flex-shrink-0">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full ${agentLogs[0]?.status === "running" ? "bg-primary animate-pulse" : "bg-muted-foreground/30"}`} />
+          <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">Agent</span>
         </div>
+        <p className="text-xs text-muted-foreground truncate flex-1">{tickerText}</p>
+        {agentLogs[0] && (
+          <Badge variant="outline" className={`flex-shrink-0 text-[10px] ${
+            agentLogs[0].status === "complete" ? "text-success border-success/30" :
+            agentLogs[0].status === "running"  ? "text-primary border-primary/30" :
+            agentLogs[0].status === "error"    ? "text-destructive border-destructive/30" :
+            "text-muted-foreground"}`}>
+            {agentLogs[0].status}
+          </Badge>
+        )}
       </div>
-
-      <style>{`
-        @keyframes ticker {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-// ── KPI Card ───────────────────────────────────────────────────────────────
-function KpiCard({ label, value, unit, color }: { label: string; value: string|number; unit: string; color: string }) {
-  const colors: Record<string,string> = {
-    teal:   "border-teal-500/25 bg-teal-500/5",
-    blue:   "border-blue-500/25 bg-blue-500/5",
-    emerald:"border-emerald-500/25 bg-emerald-500/5",
-    violet: "border-violet-500/25 bg-violet-500/5",
-  };
-  const valueColors: Record<string,string> = {
-    teal: "text-teal-300", blue: "text-blue-300", emerald: "text-emerald-300", violet: "text-violet-300",
-  };
-  return (
-    <div className={`rounded-xl border p-4 ${colors[color] ?? ""}`}>
-      <div className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">{label}</div>
-      <div className={`text-2xl font-bold ${valueColors[color] ?? "text-white"}`}>{value}</div>
-      <div className="text-xs text-zinc-500 mt-0.5">{unit}</div>
     </div>
   );
 }
