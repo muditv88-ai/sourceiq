@@ -426,7 +426,16 @@ export default function PricingPage() {
       if (sortDir==="asc") setSortDir("desc");
       else if (sortDir==="desc") { setSortDir(null); setSortCol(null); }
     } else { setSortCol(col); setSortDir("asc"); }
-  };
+  }
+
+  const deleteFile = async (fileId: string, fileName: string) => {
+    if (!projectId) return;
+    await fetch(`${API}/files/${projectId}/${fileId}`, {
+      method: "DELETE", headers: ah,
+    }).catch(() => {});
+    setSupplierFiles(prev => prev.filter((f: any) => f.id !== fileId));
+    await removeSupplier(fileName);
+  };;
   const handleCmpSort = (col: string) => {
     if (cmpSortCol===col) {
       if (cmpSortDir==="asc") setCmpSortDir("desc");
@@ -522,7 +531,8 @@ export default function PricingPage() {
                     ) : (
                       <div className="flex flex-col gap-1 max-h-44 overflow-y-auto">
                         {supplierFiles.map(f=>(
-                          <button key={f.path} onClick={async()=>{
+                          <div className="flex items-center gap-1 w-full">
+                <button key={f.path} onClick={async()=>{
                             setSelectedFile(f);
                             if (!supplierName) setSupplierName(f.name);
                             try {
@@ -541,6 +551,12 @@ export default function PricingPage() {
                             <div className="font-medium truncate">{f.name}</div>
                             <div className="text-muted-foreground text-[10px] truncate mt-0.5">{f.filename}</div>
                           </button>
+                <button
+                  title="Delete file"
+                  onClick={(e) => { e.stopPropagation(); deleteFile((f as any).id, f.name); }}
+                  className="flex-shrink-0 p-1 text-muted-foreground/30 hover:text-destructive transition-colors rounded text-xs"
+                >🗑</button>
+              </div>
                         ))}
                       </div>
                     )}
