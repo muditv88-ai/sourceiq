@@ -31,6 +31,7 @@ interface UploadResponse {
   selected_sheet: string;
   detected_header_row: number;
   diagnostics: Diagnostics;
+  rows?: Record<string, unknown>[];  // returned by ingest-v2
 }
 
 type Stage = "idle" | "uploading" | "review" | "reparsing" | "confirming" | "done" | "error";
@@ -79,7 +80,7 @@ const SupplierPricingIngest: React.FC<Props> = ({ projectId: propProjectId, onCo
     fd.append("supplier_name", supplierName || file.name);
     if (projectId) fd.append("project_id", projectId);
     try {
-      const res = await fetch(`${API_BASE}/pricing-analysis/ingest`, { method: "POST", body: fd });
+      const res = await fetch(`${API_BASE}/pricing-analysis/ingest-v2`, { method: "POST", body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail ?? "Upload failed");
@@ -125,11 +126,11 @@ const SupplierPricingIngest: React.FC<Props> = ({ projectId: propProjectId, onCo
     if (!response) return;
     setStage("confirming");
     try {
-      const res = await fetch(`${API_BASE}/pricing-analysis/confirm-supplier-sheet`, {
+      const res = await fetch(`${API_BASE}/pricing-analysis/confirm-v2`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          staging_id:    response.staging_id,
+          rows:          response.rows ?? [],
           project_id:    projectId || "unassigned",
           supplier_name: supplierName || response.diagnostics.file_name,
         }),
