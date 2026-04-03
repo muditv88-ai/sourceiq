@@ -340,6 +340,40 @@ export default function PricingPage() {
       fetch(`${API}/files/${projectId}?category=supplier_responses`,{headers:ah}).then(r=>r.json())
         .then((files:{id:string;filename:string;display_name:string}[]) => {
           setSupplierFiles(files.map(f=>({path:f.id,name:f.display_name??f.filename,filename:f.filename,id:f.id} as SupplierFile)));
+        // ── Auto-ingest saved files to rebuild bid tables on project switch ──
+        for (const f of files) {
+          try {
+            const fId = f.id ?? "";
+            const urlEp = /^[0-9a-f-]{36}$/i.test(fId)
+              ? `${API}/files/${projectId}/${fId}/url`
+              : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.display_name)}/url`;
+            const urlRes = await fetch(urlEp, { headers: hdrs2 });
+            if (!urlRes.ok) continue;
+            const { url } = await urlRes.json();
+            const blob = await fetch(url).then(r => r.blob());
+            const fd = new FormData();
+            fd.append("file", blob, f.filename ?? f.display_name ?? "file");
+            const res = await fetch(`${API}/pricing/ingest`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}` },
+              body: fd,
+            });
+            if (!res.ok) continue;
+            const data = await res.json();
+            const rows: any[] = data.line_items ?? data.rows ?? [];
+            const sName: string = data.supplier_name ?? f.filename ?? "Unknown";
+            if (rows.length) {
+              setStaged(prev => {
+                if (prev.find(s => s.supplierName === sName)) return prev;
+                return [...prev, {
+                  supplierName: sName, rows,
+                  fileName: f.filename ?? f.display_name ?? "",
+                  sheetName: "", headerRow: 0,
+                }];
+              });
+            }
+          } catch(e) { console.warn("[auto-ingest]", e); }
+        }
         }).catch(()=>{});
     }
     setParsed(null); setSheetNames([]); setSelectedFile(null); setUploadFile(null); setSupplierName(""); setHeaderRow(0);
