@@ -142,7 +142,7 @@ export default function PricingPage() {
   const ah = { Authorization: `Bearer ${token}` };
 
   const [projects, setProjects]   = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState<string | undefined>(undefined);
+  const [projectId, setProjectId] = useState("");
   const [supplierFiles, setSupplierFiles] = useState<SupplierFile[]>([]);
 
   const [ingestMode, setIngestMode]     = useState<"project"|"upload">("project");
@@ -214,13 +214,13 @@ export default function PricingPage() {
         // Handle both { projects:[...] } and { items:[...] } and plain array
         const l: Project[] = Array.isArray(d) ? d : (d.projects ?? d.items ?? []);
         setProjects(l);
-        if (l.length) setProjectId(prev => prev ?? l[0].id);
+        if (l.length) setProjectId(prev => prev || l[0].id);
       })
       .catch(()=>{});
   }, []);
 
   useEffect(() => {
-    if (!projectId || projectId === "__none__") return;
+    if (!projectId) return;
     setSupplierFiles([]); setSelectedFile(null); setParsed(null); setStaged([]); setPage(1);
     const tok2 = localStorage.getItem("access_token") ?? "";
     const hdrs2 = { Authorization: `Bearer ${tok2}` };
@@ -264,7 +264,7 @@ export default function PricingPage() {
       fd.append("file", new File([blob], fname));
       fd.append("header_row", String(hrow));
       if (sname??supplierName) fd.append("supplier_name", sname??supplierName);
-      if (projectId && projectId !== "__none__") fd.append("project_id", projectId);
+      if (projectId) fd.append("project_id", projectId);
       const sheetToSend = sheetOverride ?? selectedSheet;
       if (sheetToSend) fd.append("sheet_name", sheetToSend);
       const res  = await fetch(`${API}/pricing-analysis/ingest-v2`, { method:"POST", headers:ah, body:fd });
@@ -386,10 +386,17 @@ export default function PricingPage() {
             <p className="text-sm text-muted-foreground mt-0.5">Compare supplier bids · identify savings · benchmark positions</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Select value={projectId ?? ""} onValueChange={v => setProjectId(v || undefined)}>
-              <SelectTrigger className="h-8 text-sm w-48"><SelectValue placeholder="Select project…" /></SelectTrigger>
-              <SelectContent>{projects.map(p=><SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
-            </Select>
+            <div className="relative">
+              <select
+                value={projectId}
+                onChange={e => setProjectId(e.target.value)}
+                className="h-8 w-52 rounded-md border border-input bg-background px-3 pr-8 text-sm text-foreground appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="" disabled>Select project…</option>
+                {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+            </div>
             <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={()=>navigate("/scenario-builder")}>
               <BarChart3 className="w-3.5 h-3.5"/>Scenario Builder<ArrowRight className="w-3 h-3"/>
             </Button>
