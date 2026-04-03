@@ -1,5 +1,5 @@
 /**
- * PricingPage.tsx v3
+ * PricingPage.tsx v3 — fixed: uploaded files now saved persistently to GCS
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -218,7 +218,6 @@ export default function PricingPage() {
     const hdrs = { Authorization: `Bearer ${tok}` };
     fetch(`${API}/projects`, { headers: hdrs }).then(r=>r.json())
       .then(d => {
-        // Handle both { projects:[...] } and { items:[...] } and plain array
         const l: Project[] = Array.isArray(d) ? d : (d.projects ?? d.items ?? []);
         setProjects(l);
         if (l.length) setProjectId(prev => prev || l[0].project_id);
@@ -233,15 +232,13 @@ export default function PricingPage() {
     const hdrs2 = { Authorization: `Bearer ${tok2}` };
     setProjectLoading(true);
     setProjectLoadMsg("Loading project files…");
-    const currentProjectId = projectId; // capture for stale-closure check
-    // Use the persistent file library endpoint
+    const currentProjectId = projectId;
     console.log("[pricing] loading files for project:", projectId);
     fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: hdrs2 })
       .then(r => r.ok ? r.json() : [])
       .then(async (files: {id:string; filename:string; display_name:string; size_bytes:number}[]) => {
         if (!files.length) {
           console.warn("[pricing] no files with category=supplier_responses, trying legacy fallback");
-          // fallback: try legacy suppliers.json metadata
           const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
           const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name, name: (s.name??s.path?.split("/").pop()??"Unknown").replace(/\.[^.]+$/, "").trim()}));
           setSupplierFiles(legacy);
@@ -251,12 +248,10 @@ export default function PricingPage() {
             return;
           }
           setProjectLoadMsg(`Found ${legacy.length} supplier file${legacy.length>1?'s':''}. Auto-loading bids…`);
-          // ── auto-ingest legacy supplier files via GCS signed URL ──
           (async () => {
             for (const f of legacy) {
               try {
                 const fname = f.filename ?? f.name ?? "file.xlsx";
-                // Stream via backend to avoid GCS CORS on signed URLs
                 const dlUrl = `${API}/files/${projectId}/supplier/${encodeURIComponent(fname)}/download`;
                 const dlRes = await fetch(dlUrl, { headers: hdrs2 });
                 if (!dlRes.ok) { console.warn("[legacy-ingest] download", dlRes.status, fname); continue; }
@@ -274,7 +269,6 @@ export default function PricingPage() {
                 const sName: string = data.supplier_name ?? f.name ?? fname ?? "Unknown";
                 console.log("[legacy-ingest] ingested", sName, rows.length, "rows");
                 if (rows.length) {
-                  // Only update if still on the same project
                   if (currentProjectId !== projectId) { console.log("[legacy-ingest] stale, aborting"); return; }
                   setStaged(prev => {
                     const without = prev.filter(s => s.supplierName !== sName);
@@ -291,7 +285,6 @@ export default function PricingPage() {
         const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: ((f as any).display_name??f.filename).replace(/\.[^.]+$/, "").trim(), filename: f.filename, id: f.id }));
         setSupplierFiles(mapped);
         setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Auto-loading bids…`);
-        // ── auto-ingest all files into staged ──
         (async () => {
           for (const f of files) {
             try {
@@ -312,7 +305,7 @@ export default function PricingPage() {
               const data = await res.json();
               const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
               const rawName = data.supplier_name ?? (f as any).display_name ?? f.filename ?? "Unknown";
-                const sName: string = rawName.replace(/\.[^.]+$/, "").trim();
+              const sName: string = rawName.replace(/\.[^.]+$/, "").trim();
               if (rows.length) {
                 setStaged(prev => {
                   const without = prev.filter(s => s.supplierName !== sName);
@@ -329,7 +322,6 @@ export default function PricingPage() {
         setProjectLoadMsg("Could not load project files");
         setProjectLoading(false);
       });
-
   }, [projectId, reloadKey]);
 
   useEffect(() => {
@@ -365,10 +357,8 @@ export default function PricingPage() {
       setParsed(data);
       if (data.sheet_names?.length) {
         setSheetNames(data.sheet_names);
-        // Only override displayed sheet if the user didn't explicitly pick one
         if (!sheetOverride) setSelectedSheet(data.selected_sheet??data.sheet_names[0]);
       }
-      // Only override header row if user didn't manually set it
       if (!userPickedHeader) setHeaderRow(data.detected_header_row??hrow);
     } catch {}
     setParsing(false);
@@ -386,41 +376,57 @@ export default function PricingPage() {
     return null;
   };
 
+  // ── FIX: persist uploaded files to GCS before clearing state ──
   const confirmRows = async () => {
     if (!parsed) return;
     const rows  = parsed.rows??[];
     const sName = supplierName||selectedFile?.name||uploadFile?.name?.replace(/\.[^.]+$/,"")||"Supplier";
+
+    // 1. Save rows to backend DB
     await fetch(`${API}/pricing-analysis/confirm-v2`, {
       method:"POST", headers:{...ah,"Content-Type":"application/json"},
       body: JSON.stringify({ rows, project_id:projectId, supplier_name:sName }),
     }).catch(()=>{});
-    if (projectId) {
-      
+
+    // 2. If this came from an uploaded file, persist it to GCS so it survives page reload
+    if (projectId && uploadFile) {
+      const fd2 = new FormData();
+      fd2.append("file", uploadFile);
+      fd2.append("project_id", projectId);
+      fd2.append("category", "supplier_responses");
+      fd2.append("user_id", getUserId());
+      fd2.append("display_name", sName);
+      await fetch(`${API}/files/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd2,
+      }).catch(()=>{});
+
+      // 3. Refresh the left-panel file list so the new file appears immediately
+      fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: ah })
+        .then(r => r.json())
+        .then((files: {id:string; filename:string; display_name:string}[]) => {
+          setSupplierFiles(files.map(f => ({
+            path: f.id,
+            name: (f.display_name ?? f.filename).replace(/\.[^.]+$/, "").trim(),
+            filename: f.filename,
+            id: f.id,
+          } as SupplierFile)));
+        })
+        .catch(()=>{});
     }
+
+    // 4. Add to in-memory staged comparison
     setStaged(prev => {
       const idx = prev.findIndex(s=>s.supplierName===sName);
       const entry: StagedSupplier = { supplierName:sName, rows, fileName:parsed.diagnostics.file_name, sheetName:parsed.selected_sheet, headerRow };
       if (idx>=0) { const u=[...prev]; u[idx]=entry; return u; }
       return [...prev, entry];
     });
-    if (projectId && uploadFile) {
-      const fd2 = new FormData();
-      fd2.append("file", uploadFile);
-      fd2.append("project_id", projectId!);
-      fd2.append("category", "supplier_responses");
-      fd2.append("user_id", getUserId());
-      fd2.append("display_name", sName);
-      await fetch(`${API}/files/upload`,{method:"POST",headers:{Authorization:`Bearer ${token}`},body:fd2}).catch(()=>{});
-      // Refresh file list
-      fetch(`${API}/files/${projectId}?category=supplier_responses`,{headers:ah}).then(r=>r.json())
-        .then((files:{id:string;filename:string;display_name:string}[]) => {
-          setSupplierFiles(files.map(f=>({path:f.id,name:(f.display_name??f.filename).replace(/\.[^.]+$/, "").trim(),filename:f.filename,id:f.id} as SupplierFile)));
-        }).catch(()=>{});
-    }
+
+    // 5. Clear parse state
     setParsed(null); setSheetNames([]); setSelectedFile(null); setUploadFile(null); setSupplierName(""); setHeaderRow(0);
   };
-
-
 
   const downloadCSV = (filename: string, headers: string[], rows: unknown[][]) => {
     const esc = (v: unknown) => { const s=String(v??''); return /[,\n"]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; };
@@ -463,7 +469,7 @@ export default function PricingPage() {
       if (sortDir==="asc") setSortDir("desc");
       else if (sortDir==="desc") { setSortDir(null); setSortCol(null); }
     } else { setSortCol(col); setSortDir("asc"); }
-  }
+  };
 
   const deleteFile = async (fileId: string, fileName: string) => {
     if (!projectId) return;
@@ -472,7 +478,8 @@ export default function PricingPage() {
     }).catch(() => {});
     setSupplierFiles(prev => prev.filter((f: any) => f.id !== fileId));
     await removeSupplier(fileName);
-  };;
+  };
+
   const handleCmpSort = (col: string) => {
     if (cmpSortCol===col) {
       if (cmpSortDir==="asc") setCmpSortDir("desc");
@@ -586,32 +593,32 @@ export default function PricingPage() {
                     ) : (
                       <div className="flex flex-col gap-1 max-h-44 overflow-y-auto">
                         {supplierFiles.map(f=>(
-                          <div className="flex items-center gap-1 w-full">
-                <button key={f.path} onClick={async()=>{
-                            setSelectedFile(f);
-                            if (!supplierName) setSupplierName(f.name);
-                            try {
-                              const fId = (f as any).id;
-                              const isUUIDf = fId && /^[0-9a-f-]{36}$/i.test(fId);
-                              const urlEp = isUUIDf
-                                ? `${API}/files/${projectId}/${fId}/url`
-                                : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
-                              const urlRes = await fetch(urlEp, { headers:ah });
-                              const { url } = await urlRes.json();
-                              const blob = await fetch(url).then(r=>r.blob());
-                              await doIngest(blob, f.filename??f.name, 0, f.name);
-                            } catch {}
-                          }}
-                          className={`text-left px-3 py-2 rounded-md text-xs transition-colors border ${selectedFile?.path===f.path?"bg-primary/10 border-primary/40 text-primary":"bg-background border-border hover:border-primary/30"}`}>
-                            <div className="font-medium truncate">{f.name}</div>
-                            <div className="text-muted-foreground text-[10px] truncate mt-0.5">{f.filename}</div>
-                          </button>
-                <button
-                  title="Delete file"
-                  onClick={(e) => { e.stopPropagation(); deleteFile((f as any).id, f.name); }}
-                  className="flex-shrink-0 p-1 text-muted-foreground/30 hover:text-destructive transition-colors rounded text-xs"
-                >🗑</button>
-              </div>
+                          <div key={f.path} className="flex items-center gap-1 w-full">
+                            <button onClick={async()=>{
+                              setSelectedFile(f);
+                              if (!supplierName) setSupplierName(f.name);
+                              try {
+                                const fId = (f as any).id;
+                                const isUUIDf = fId && /^[0-9a-f-]{36}$/i.test(fId);
+                                const urlEp = isUUIDf
+                                  ? `${API}/files/${projectId}/${fId}/url`
+                                  : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
+                                const urlRes = await fetch(urlEp, { headers:ah });
+                                const { url } = await urlRes.json();
+                                const blob = await fetch(url).then(r=>r.blob());
+                                await doIngest(blob, f.filename??f.name, 0, f.name);
+                              } catch {}
+                            }}
+                              className={`flex-1 text-left px-3 py-2 rounded-md text-xs transition-colors border ${selectedFile?.path===f.path?"bg-primary/10 border-primary/40 text-primary":"bg-background border-border hover:border-primary/30"}`}>
+                              <div className="font-medium truncate">{f.name}</div>
+                              <div className="text-muted-foreground text-[10px] truncate mt-0.5">{f.filename}</div>
+                            </button>
+                            <button
+                              title="Delete file"
+                              onClick={(e) => { e.stopPropagation(); deleteFile((f as any).id, f.name); }}
+                              className="flex-shrink-0 p-1 text-muted-foreground/30 hover:text-destructive transition-colors rounded text-xs"
+                            >🗑</button>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -665,29 +672,31 @@ export default function PricingPage() {
               </CardContent>
             </Card>
 
-            {(
-              <Card>
-                <CardHeader className="py-2 px-4 flex-row items-center justify-between">
-                  <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
-                  {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
-                    // files already persisted on confirm
-                    const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
-                  }}><Save className="w-3 h-3"/>Save</Button>}
-                </CardHeader>
-                <div id="save-toast" style={{opacity:0,transition:"opacity 0.4s"}} className="px-4 pb-1 text-[10px] text-success">✓ Saved to project</div>
-                <CardContent className="px-4 pb-3 flex flex-col gap-1.5">
-                  {staged.map((s,i)=>(
-                    <div key={s.supplierName} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i%SUPPLIER_COLORS.length]}`}>{s.supplierName}</span>
-                        <span className="text-xs text-muted-foreground">{s.rows.length} items</span>
-                      </div>
-                      <button onClick={()=>removeSupplier(s.supplierName)} className="text-muted-foreground/40 hover:text-destructive transition-colors text-xs ml-2">✕</button>
+            {/* In Comparison card */}
+            <Card>
+              <CardHeader className="py-2 px-4 flex-row items-center justify-between">
+                <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
+                {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
+                  const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
+                }}><Save className="w-3 h-3"/>Save</Button>}
+              </CardHeader>
+              <div id="save-toast" style={{opacity:0,transition:"opacity 0.4s"}} className="px-4 pb-1 text-[10px] text-success">✓ Saved to project</div>
+              <CardContent className="px-4 pb-3 flex flex-col gap-1.5">
+                {staged.length===0 ? (
+                  <p className="text-xs text-muted-foreground italic">
+                    {projectLoading ? projectLoadMsg : "No suppliers loaded yet."}
+                  </p>
+                ) : staged.map((s,i)=>(
+                  <div key={s.supplierName} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i%SUPPLIER_COLORS.length]}`}>{s.supplierName}</span>
+                      <span className="text-xs text-muted-foreground">{s.rows.length} items</span>
                     </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
+                    <button onClick={()=>removeSupplier(s.supplierName)} className="text-muted-foreground/40 hover:text-destructive transition-colors text-xs ml-2">✕</button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
           </div>
 
           {/* ── Right panel ── */}
@@ -737,179 +746,154 @@ export default function PricingPage() {
             )}
 
             {/* ── All Bids Table ── */}
-            {(
-              <Card>
-                <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-sm">All Bids</CardTitle>
-                    <span className="text-xs text-muted-foreground">{allRows.length > 0 ? `${allRows.length} rows · ${staged.length} suppliers` : "No bids loaded — select a project or upload a file"}</span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {allRows.length>0&&<><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('csv')}><Download className="w-3 h-3"/>CSV</Button><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('xlsx')}><Download className="w-3 h-3"/>XLSX</Button></>}
-                    <span className="text-xs text-muted-foreground">Rows/page:</span>
-                    {[10,20,50,100].map(n=>(
-                      <button key={n} onClick={()=>setPageSize(n)}
-                        className={`px-2 py-0.5 rounded text-xs border transition-colors ${pageSize===n?"bg-primary text-primary-foreground border-primary":"border-border text-muted-foreground hover:border-primary/40"}`}>
-                        {n}
-                      </button>
-                    ))}
-                  </div>
-                </CardHeader>
-                <div className="overflow-auto border-t border-border max-h-[380px]">
-                  <table className="w-full text-xs min-w-full">
-                    <thead className="sticky top-0 bg-muted z-10">
-                      <tr>
-                        {[
-                          {col:"lineItem",label:"Item"}, {col:"supplier",label:"Supplier"},
-                          {col:"category",label:"Category"}, {col:"unitOfMeasure",label:"UoM"},
-                          {col:"quantity",label:"Qty"}, {col:"unitPrice",label:"Unit Price"},
-                          {col:"total",label:"Total"}, {col:"delta",label:"Δ vs Best"},
-                        ].map(({col,label})=>(
-                          <SortHeader key={col} label={label} col={col} sortCol={sortCol} sortDir={sortDir} onSort={handleSort}/>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pagedRows.map((row,i)=>{
-                        const delta = (row.delta as number)??0;
-                        const sIdx  = staged.findIndex(s=>s.supplierName===row.supplier);
-                        return (
-                          <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                            <td className="px-3 py-2 font-medium max-w-[180px] truncate">{String(row.lineItem??"—")}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${SUPPLIER_COLORS[(sIdx>=0?sIdx:0)%SUPPLIER_COLORS.length]}`}>{String(row.supplier??"—")}</span>
-                            </td>
-                            <td className="px-3 py-2 text-muted-foreground">{String(row.category??"—")}</td>
-                            <td className="px-3 py-2 text-muted-foreground">{String(row.unitOfMeasure??"—")}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{fmt(row.quantity)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums font-medium">{fmt(row.unitPrice)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{fmt(row.total)}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">
-                              <span className={delta===0?"text-success font-semibold":delta>25?"text-destructive":"text-muted-foreground"}>
-                                {delta===0?"✓ Best":`+${delta.toFixed(1)}%`}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+            <Card>
+              <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-sm">All Bids</CardTitle>
+                  <span className="text-xs text-muted-foreground">{allRows.length > 0 ? `${allRows.length} rows · ${staged.length} suppliers` : "No bids loaded — select a project or upload a file"}</span>
                 </div>
-                {/* Pagination */}
-                <div className="flex items-center justify-between px-4 py-2 border-t border-border text-xs text-muted-foreground">
-                  <span>Showing {Math.min((page-1)*pageSize+1,allRows.length)}–{Math.min(page*pageSize,allRows.length)} of {allRows.length}</span>
-                  <div className="flex gap-1">
-                    <button onClick={()=>setPage(1)} disabled={page===1} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">«</button>
-                    <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">‹</button>
-                    <span className="px-3 py-1">Page {page} / {totalPages}</span>
-                    <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">›</button>
-                    <button onClick={()=>setPage(totalPages)} disabled={page===totalPages} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">»</button>
-                  </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {allRows.length>0&&<><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('csv')}><Download className="w-3 h-3"/>CSV</Button><Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>handleDownload('xlsx')}><Download className="w-3 h-3"/>XLSX</Button></>}
+                  <span className="text-xs text-muted-foreground">Rows/page:</span>
+                  {[10,20,50,100].map(n=>(
+                    <button key={n} onClick={()=>setPageSize(n)}
+                      className={`px-2 py-0.5 rounded text-xs border transition-colors ${pageSize===n?"bg-primary text-primary-foreground border-primary":"border-border text-muted-foreground hover:border-primary/40"}`}>
+                      {n}
+                    </button>
+                  ))}
                 </div>
-              </Card>
-            )}
-
-            {/* ── Bid Comparison Table ── */}
-            {true ? (
-              <Card>
-                <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-sm">Bid Comparison</CardTitle>
-                    <span className="text-xs text-muted-foreground">{pivot.length} SKUs · {pivotSuppliers.length} suppliers</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>navigate("/scenario-builder")}>
-                      <BarChart3 className="w-3 h-3"/>Build Scenario
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>navigate("/analysis")}>
-                      <FlaskConical className="w-3 h-3"/>Technical Analysis
-                    </Button>
-                  </div>
-                </CardHeader>
-                <div className="overflow-auto border-t border-border max-h-[480px]">
-                  <table className="w-full text-xs min-w-full">
-                    <thead className="sticky top-0 bg-muted z-10">
-                      <tr>
-                        <SortHeader label="Item" col="item" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
-                        {pivotSuppliers.map((s,i)=>(
-                          <th key={s} className="px-3 py-2.5 text-right whitespace-nowrap border-b border-border">
-                            <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i%SUPPLIER_COLORS.length]}`}>{s}</span>
-                          </th>
-                        ))}
-                        <SortHeader label="Lowest" col="lowest_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
-                        <SortHeader label="Highest" col="highest_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
-                        <SortHeader label="Avg" col="avg_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
-                        <SortHeader label="Spread %" col="spread_pct" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
-                        <th className="px-3 py-2.5 text-left text-muted-foreground font-medium border-b border-border min-w-[200px]">Analysis</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pivot.map((row,i)=>(
+              </CardHeader>
+              <div className="overflow-auto border-t border-border max-h-[380px]">
+                <table className="w-full text-xs min-w-full">
+                  <thead className="sticky top-0 bg-muted z-10">
+                    <tr>
+                      {[
+                        {col:"lineItem",label:"Item"}, {col:"supplier",label:"Supplier"},
+                        {col:"category",label:"Category"}, {col:"unitOfMeasure",label:"UoM"},
+                        {col:"quantity",label:"Qty"}, {col:"unitPrice",label:"Unit Price"},
+                        {col:"total",label:"Total"}, {col:"delta",label:"Δ vs Best"},
+                      ].map(({col,label})=>(
+                        <SortHeader key={col} label={label} col={col} sortCol={sortCol} sortDir={sortDir} onSort={handleSort}/>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedRows.length===0 ? (
+                      <tr><td colSpan={8} className="px-4 py-10 text-center text-muted-foreground text-sm">
+                        {projectLoading ? projectLoadMsg : "No bids loaded — select a project or upload a file"}
+                      </td></tr>
+                    ) : pagedRows.map((row,i)=>{
+                      const delta = (row.delta as number)??0;
+                      const sIdx  = staged.findIndex(s=>s.supplierName===row.supplier);
+                      return (
                         <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
-                          <td className="px-3 py-2 font-medium max-w-[160px] truncate">{String(row.item??"—")}</td>
-                          {pivotSuppliers.map(s=>{
-                            const val  = row[s] as number|null;
-                            const low  = s===row.lowest_supplier;
-                            const high = s===row.highest_supplier;
-                            return (
-                              <td key={s} className="px-3 py-2 text-right whitespace-nowrap tabular-nums">
-                                {val!=null
-                                  ? <span className={low?"text-success font-semibold":high?"text-destructive":""}>
-                                      {low&&"▼ "}{high&&"▲ "}{fmt(val)}
-                                    </span>
-                                  : <span className="text-muted-foreground/40">—</span>}
-                              </td>
-                            );
-                          })}
-                          <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-success font-semibold">
-                            {row.lowest_price!=null?<>{fmt(row.lowest_price)}{" "}<span className="text-muted-foreground/50 font-normal text-[10px]">({row.lowest_supplier})</span></>:"—"}
+                          <td className="px-3 py-2 font-medium max-w-[180px] truncate">{String(row.lineItem??"—")}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${SUPPLIER_COLORS[(sIdx>=0?sIdx:0)%SUPPLIER_COLORS.length]}`}>{String(row.supplier??"—")}</span>
                           </td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-destructive">
-                            {row.highest_price!=null?<>{fmt(row.highest_price)}{" "}<span className="text-muted-foreground/50 font-normal text-[10px]">({row.highest_supplier})</span></>:"—"}
-                          </td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-muted-foreground">{fmt(row.avg_price)}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{String(row.category??"—")}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{String(row.unitOfMeasure??"—")}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.quantity)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-medium">{fmt(row.unitPrice)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{fmt(row.total)}</td>
                           <td className="px-3 py-2 text-right tabular-nums">
-                            <span className={(row.spread_pct??0)>25?"text-destructive font-semibold":(row.spread_pct??0)<5?"text-success":"text-warning"}>
-                              {(row.spread_pct??0).toFixed(1)}%
+                            <span className={delta===0?"text-success font-semibold":delta>25?"text-destructive":"text-muted-foreground"}>
+                              {delta===0?"✓ Best":`+${delta.toFixed(1)}%`}
                             </span>
                           </td>
-                          <td className="px-3 py-2 text-muted-foreground text-[11px] max-w-xs">{agentComment(row, pivotSuppliers)}</td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            ) : !staged.length ? (
-              <div className="flex-1 flex items-center justify-center min-h-[200px]">
-                <div className="text-center">
-                  <div className="text-5xl opacity-20 mb-3">📊</div>
-                  <p className="text-muted-foreground text-sm">No bids loaded yet</p>
-                  <p className="text-muted-foreground/60 text-xs mt-1">
-                    {ingestMode==="project"?"Select a supplier file from the left panel":"Upload a bid sheet (.xlsx or .csv)"}
-                  </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="mt-3 gap-1.5 text-xs"
-                  onClick={() => { setStaged([]); setReloadKey(k => k+1); }}
-                  disabled={projectLoading || !projectId}
-                >
-                  {projectLoading ? (
-                    <span className="w-3 h-3 border border-border border-t-foreground rounded-full animate-spin" />
-                  ) : (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
-                      <path d="M21 3v5h-5"/>
-                      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
-                      <path d="M8 16H3v5"/>
-                    </svg>
-                  )}
-                  Load Data
-                </Button>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {/* Pagination */}
+              <div className="flex items-center justify-between px-4 py-2 border-t border-border text-xs text-muted-foreground">
+                <span>Showing {Math.min((page-1)*pageSize+1,allRows.length)}–{Math.min(page*pageSize,allRows.length)} of {allRows.length}</span>
+                <div className="flex gap-1">
+                  <button onClick={()=>setPage(1)} disabled={page===1} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">«</button>
+                  <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={page===1} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">‹</button>
+                  <span className="px-3 py-1">Page {page} / {totalPages}</span>
+                  <button onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">›</button>
+                  <button onClick={()=>setPage(totalPages)} disabled={page===totalPages} className="px-2 py-1 rounded border border-border disabled:opacity-30 hover:border-primary/40">»</button>
                 </div>
               </div>
-            ) : null}
+            </Card>
+
+            {/* ── Bid Comparison Table ── */}
+            <Card>
+              <CardHeader className="pb-2 flex-row items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-sm">Bid Comparison</CardTitle>
+                  <span className="text-xs text-muted-foreground">{pivot.length} SKUs · {pivotSuppliers.length} suppliers</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>navigate("/scenario-builder")}>
+                    <BarChart3 className="w-3 h-3"/>Build Scenario
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={()=>navigate("/analysis")}>
+                    <FlaskConical className="w-3 h-3"/>Technical Analysis
+                  </Button>
+                </div>
+              </CardHeader>
+              <div className="overflow-auto border-t border-border max-h-[480px]">
+                <table className="w-full text-xs min-w-full">
+                  <thead className="sticky top-0 bg-muted z-10">
+                    <tr>
+                      <SortHeader label="Item" col="item" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
+                      {pivotSuppliers.map((s,i)=>(
+                        <th key={s} className="px-3 py-2.5 text-right whitespace-nowrap border-b border-border">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium border ${SUPPLIER_COLORS[i%SUPPLIER_COLORS.length]}`}>{s}</span>
+                        </th>
+                      ))}
+                      <SortHeader label="Lowest" col="lowest_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
+                      <SortHeader label="Highest" col="highest_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
+                      <SortHeader label="Avg" col="avg_price" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
+                      <SortHeader label="Spread %" col="spread_pct" sortCol={cmpSortCol} sortDir={cmpSortDir} onSort={handleCmpSort}/>
+                      <th className="px-3 py-2.5 text-left text-muted-foreground font-medium border-b border-border min-w-[200px]">Analysis</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pivot.length===0 ? (
+                      <tr><td colSpan={pivotSuppliers.length+6} className="px-4 py-10 text-center text-muted-foreground text-sm">
+                        {projectLoading ? projectLoadMsg : staged.length < 2 ? "Add at least 2 suppliers to see a comparison" : "No comparable items found"}
+                      </td></tr>
+                    ) : pivot.map((row,i)=>(
+                      <tr key={i} className="border-b border-border/50 hover:bg-muted/20 transition-colors">
+                        <td className="px-3 py-2 font-medium max-w-[160px] truncate">{String(row.item??"—")}</td>
+                        {pivotSuppliers.map(s=>{
+                          const val  = row[s] as number|null;
+                          const low  = s===row.lowest_supplier;
+                          const high = s===row.highest_supplier;
+                          return (
+                            <td key={s} className="px-3 py-2 text-right whitespace-nowrap tabular-nums">
+                              {val!=null
+                                ? <span className={low?"text-success font-semibold":high?"text-destructive":""}>
+                                    {low&&"▼ "}{high&&"▲ "}{fmt(val)}
+                                  </span>
+                                : <span className="text-muted-foreground/40">—</span>}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-success font-semibold">
+                          {row.lowest_price!=null?<>{fmt(row.lowest_price)}{" "}<span className="text-muted-foreground/50 font-normal text-[10px]">({row.lowest_supplier})</span></>:"—"}
+                        </td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-destructive">
+                          {row.highest_price!=null?<>{fmt(row.highest_price)}{" "}<span className="text-muted-foreground/50 font-normal text-[10px]">({row.highest_supplier})</span></>:"—"}
+                        </td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-muted-foreground">{fmt(row.avg_price)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          <span className={(row.spread_pct??0)>25?"text-destructive font-semibold":(row.spread_pct??0)<5?"text-success":"text-warning"}>
+                            {(row.spread_pct??0).toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-muted-foreground text-[11px] max-w-xs">{agentComment(row, pivotSuppliers)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
 
           </div>
         </div>
