@@ -3,6 +3,14 @@
  * UX mirrors PricingPage.tsx exactly: header bar, KPI strip, left panel,
  * right panel tabs, agent ticker at the bottom.
  * No analysisStore / AgentStreamingThought / ConfidenceBadge.
+ *
+ * Fix log (v2):
+ *  - API prefix corrected to /technical-analysis (main.py mounts at that prefix)
+ *  - Run endpoint uses POST /technical-analysis/run with full payload built
+ *    from loaded supplier files + RFP questions fetched from backend
+ *  - Status poll uses /technical-analysis/status/{job_id}
+ *  - Agent ticker filters agent_id === "technical" (not "analysis")
+ *  - Upload fetch omits Content-Type header (browser sets multipart boundary)
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -19,12 +27,37 @@ import {
   Info, PlusCircle,
 } from "lucide-react";
 
+// ── Auth & API constants (match Pricing exactly) ──────────────────────────────
 const API = "/api";
+const token = localStorage.getItem("access_token") ?? "";
+const ah = { Authorization: `Bearer ${token}` };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Project { id: string; name: string; project_id?: string; }
-interface SupplierFile { id: string; filename: string; display_name: string; supplierName: string; }
+
+interface RawFile {
+  id: string;
+  filename: string;
+  display_name: string;
+  size_bytes: number;
+}
+
+interface SupplierFile {
+  id: string;
+  filename: string;
+  display_name: string;
+  supplierName: string;
+}
+
 interface AgentLog { id: string; agent_id: string; status: string; message: string; }
+
+interface RFQQuestion {
+  question_id: string;
+  question_text: string;
+  question_type: "qualitative" | "quantitative";
+  category: string;
+  weight: number;
+}
 
 interface AnalysisResult {
   project_id: string;
@@ -164,14 +197,95 @@ function buildGaps(s: SupplierResult) {
   return weak.sort((a, b) => a.score - b.score);
 }
 
+// ── Shape backend raw result → AnalysisResult ─────────────────────────────────
+// The backend /technical-analysis/run endpoint returns {scores, gaps, reports, disqualified}
+// We need to normalise it into the AnalysisResult shape the UI expects.
+// If the backend already returns {suppliers: [...]} we pass it through.
+function normaliseResult(data: Record<string, unknown>, projectId: string): AnalysisResult {
+  // Already shaped (e.g. from _shape_analysis_result or a job poll result)
+  if (Array.isArray((data as { suppliers?: unknown }).suppliers)) {
+    return {
+      project_id: (data.project_id as string) ?? projectId,
+      analysis_summary: (data.analysis_summary as string) ?? "",
+      top_recommendation: (data.top_recommendation as string) ?? "",
+      confidence_score: (data.confidence_score as number) ?? 0,
+      suppliers: (data.suppliers as SupplierResult[]),
+    };
+  }
+
+  // Raw format from POST /technical-analysis/run:
+  // { scores: {supplierName: {qId: {score, rationale, flagged}}}, gaps, reports, disqualified, project_id }
+  const scores = (data.scores ?? {}) as Record<string, Record<string, { score?: number; rationale?: string; flagged?: boolean }>>;
+  const reports = (data.reports ?? {}) as Record<string, { strengths?: string[]; weaknesses?: string[]; recommendation?: string }>;
+  const disqualified: string[] = Array.isArray(data.disqualified) ? (data.disqualified as string[]) : [];
+
+  const supplierNames = Object.keys(scores);
+  const overall = (supplierScores: Record<string, { score?: number }>) => {
+    const vals = Object.values(supplierScores).map(v => typeof v === "object" && v !== null ? (v.score ?? 0) : 0);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  };
+
+  const sorted = [...supplierNames].sort((a, b) => overall(scores[b]) - overall(scores[a]));
+
+  const suppliers: SupplierResult[] = sorted.map((name, idx) => {
+    const supplierScores = scores[name] ?? {};
+    const report = reports[name] ?? {};
+    const ov = overall(supplierScores);
+
+    // Group questions by category — derive from question IDs if no category info
+    const catMap: Record<string, QuestionScore[]> = {};
+    for (const [qid, s] of Object.entries(supplierScores)) {
+      const cat = qid.split("_")[0] ?? "General";
+      if (!catMap[cat]) catMap[cat] = [];
+      catMap[cat].push({
+        question_id: qid,
+        question_text: qid,
+        question_type: "qualitative",
+        weight: 10,
+        score: typeof s === "object" && s !== null ? (s.score ?? 0) : 0,
+        rationale: typeof s === "object" && s !== null ? (s.rationale ?? "") : "",
+        flagged: typeof s === "object" && s !== null ? (s.flagged ?? false) : false,
+      });
+    }
+
+    const category_scores: CategoryScore[] = Object.entries(catMap).map(([cat, qs]) => ({
+      category: cat,
+      weighted_score: qs.reduce((a, q) => a + q.score, 0) / Math.max(qs.length, 1),
+      questions: qs,
+    }));
+
+    return {
+      supplier_id: name,
+      supplier_name: name,
+      rank: idx + 1,
+      overall_score: parseFloat(ov.toFixed(2)),
+      strengths: report.strengths ?? [],
+      weaknesses: report.weaknesses ?? [],
+      recommendation: report.recommendation ?? "",
+      category_scores,
+    };
+  });
+
+  const top = suppliers[0];
+  return {
+    project_id: (data.project_id as string) ?? projectId,
+    analysis_summary: `Evaluated ${suppliers.length} supplier(s).`,
+    top_recommendation: top
+      ? `${top.supplier_name} is the recommended supplier with a score of ${top.overall_score.toFixed(1)}/10.`
+      : "No suppliers evaluated.",
+    confidence_score: 0,
+    suppliers,
+  };
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Auth
-  const token = localStorage.getItem("access_token") ?? "";
-  const ah = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
+  // Re-read token at render time so it's always fresh
+  const liveToken = () => localStorage.getItem("access_token") ?? "";
+  const liveAh = () => ({ Authorization: `Bearer ${liveToken()}` });
 
   // ── Projects
   const [projects, setProjects]   = useState<Project[]>([]);
@@ -191,8 +305,8 @@ export default function AnalysisPage() {
   const [uploadMsg, setUploadMsg]           = useState("");
 
   // ── Analysis result
-  const [result, setResult]   = useState<AnalysisResult | null>(null);
-  const [running, setRunning] = useState(false);
+  const [result, setResult]     = useState<AnalysisResult | null>(null);
+  const [running, setRunning]   = useState(false);
   const [runError, setRunError] = useState("");
 
   // ── Right panel
@@ -202,7 +316,7 @@ export default function AnalysisPage() {
   const [exportingSupplier, setExportingSupplier] = useState<string | null>(null);
 
   // ── Weights
-  const [weights, setWeights]       = useState<Record<string, number>>({});
+  const [weights, setWeights]             = useState<Record<string, number>>({});
   const [weightsEdited, setWeightsEdited] = useState(false);
 
   // ── Disqualification
@@ -217,8 +331,7 @@ export default function AnalysisPage() {
 
   // ── Load projects ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const tok = localStorage.getItem("access_token") ?? "";
-    fetch(`${API}/projects`, { headers: { Authorization: `Bearer ${tok}` } })
+    fetch(`${API}/projects`, { headers: liveAh() })
       .then(r => r.json())
       .then(d => {
         const l: Project[] = Array.isArray(d) ? d : (d.projects ?? d.items ?? []);
@@ -226,6 +339,7 @@ export default function AnalysisPage() {
         if (l.length) setProjectId(prev => prev || (l[0].project_id ?? l[0].id));
       })
       .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Load supplier files when project changes ───────────────────────────────
@@ -237,12 +351,10 @@ export default function AnalysisPage() {
     setProjectLoading(true);
     setProjectLoadMsg("Loading project files…");
     const currentProjectId = projectId;
-    const tok = localStorage.getItem("access_token") ?? "";
-    const hdrs = { Authorization: `Bearer ${tok}` };
 
-    fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: hdrs })
+    fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: liveAh() })
       .then(r => r.ok ? r.json() : [])
-      .then((files: { id: string; filename: string; display_name: string; size_bytes: number }[]) => {
+      .then((files: RawFile[]) => {
         if (currentProjectId !== projectId) return;
         if (!files.length) {
           setProjectLoadMsg("No supplier response files found for this project.");
@@ -263,6 +375,7 @@ export default function AnalysisPage() {
         setProjectLoadMsg("Could not load project files.");
         setProjectLoading(false);
       });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, reloadKey]);
 
   // ── Auto-derive weights from result categories ─────────────────────────────
@@ -281,17 +394,19 @@ export default function AnalysisPage() {
 
   // ── Agent ticker poll ──────────────────────────────────────────────────────
   useEffect(() => {
-    const tok = localStorage.getItem("access_token") ?? "";
     const t = setInterval(() => {
-      fetch(`${API}/agent-logs?limit=10`, { headers: { Authorization: `Bearer ${tok}` } })
+      fetch(`${API}/agent-logs?limit=10`, { headers: liveAh() })
         .then(r => r.json())
-        .then((logs: AgentLog[]) => setAgentLogs(logs.filter(l => l.agent_id === "analysis")))
+        // agent_id is "technical" in analysis.py push_log calls
+        .then((logs: AgentLog[]) => setAgentLogs(logs.filter(l => l.agent_id === "technical")))
         .catch(() => {});
     }, 3000);
     return () => clearInterval(t);
-  }, [token]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Upload handler ─────────────────────────────────────────────────────────
+  // NOTE: Do NOT include Content-Type header — browser sets multipart boundary automatically
   const handleUpload = useCallback(async () => {
     if (!uploadFile || !projectId) return;
     setUploading(true);
@@ -302,7 +417,12 @@ export default function AnalysisPage() {
       fd.append("project_id", projectId);
       fd.append("category", "supplier_responses");
       fd.append("display_name", uploadName || uploadFile.name.replace(/\.[^.]+$/, ""));
-      const res = await fetch(`${API}/files/upload`, { method: "POST", headers: ah, body: fd });
+      // Only Authorization header — no Content-Type (browser handles multipart boundary)
+      const res = await fetch(`${API}/files/upload`, {
+        method: "POST",
+        headers: liveAh(),
+        body: fd,
+      });
       if (!res.ok) throw new Error(await res.text());
       setUploadMsg("File uploaded successfully.");
       setUploadFile(null);
@@ -312,37 +432,85 @@ export default function AnalysisPage() {
       setUploadMsg(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     setUploading(false);
-  }, [uploadFile, uploadName, projectId, ah]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadFile, uploadName, projectId]);
 
   // ── Run analysis ───────────────────────────────────────────────────────────
+  // The backend POST /technical-analysis/run requires {questions, supplier_responses}.
+  // We first fetch RFP questions for the project, then call run.
+  // If questions aren't parseable yet, we still send an empty array and let
+  // the backend return an informative error.
   const handleRun = useCallback(async () => {
     if (!projectId) return;
     setRunning(true);
     setRunError("");
+
     try {
-      const res = await fetch(`${API}/analysis/run`, {
+      const hdrs = liveAh();
+
+      // Step 1: Fetch RFP questions for this project
+      // The backend stores them as questions.json metadata — we try the rfp route
+      let questions: RFQQuestion[] = [];
+      try {
+        const qRes = await fetch(`${API}/rfp/${projectId}/questions`, { headers: hdrs });
+        if (qRes.ok) {
+          const qData = await qRes.json();
+          questions = Array.isArray(qData) ? qData : (qData.questions ?? []);
+        }
+      } catch {
+        // Questions not available via that route — proceed with empty array;
+        // backend _do_analysis_job will load them from questions.json itself
+      }
+
+      // Step 2: Build supplier_responses map from loaded file names
+      // Each supplier maps question_id → "" (backend re-parses docs from disk)
+      const supplier_responses: Record<string, Record<string, string>> = {};
+      for (const sf of supplierFiles) {
+        supplier_responses[sf.supplierName] = {};
+        for (const q of questions) {
+          supplier_responses[sf.supplierName][q.question_id] = "";
+        }
+      }
+
+      // Step 3: POST to the correct endpoint
+      // Correct prefix per main.py: /technical-analysis (not /analysis)
+      const res = await fetch(`${API}/technical-analysis/run`, {
         method: "POST",
-        headers: { ...ah, "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: projectId }),
+        headers: { ...hdrs, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          questions,
+          supplier_responses,
+        }),
       });
-      if (!res.ok) throw new Error(await res.text());
+
+      if (!res.ok) {
+        const errText = await res.text();
+        let errMsg = errText;
+        try {
+          const errJson = JSON.parse(errText);
+          errMsg = errJson.detail ?? errJson.message ?? errText;
+        } catch { /* leave as text */ }
+        throw new Error(errMsg);
+      }
+
       const data = await res.json();
 
-      // If backend returns a job_id, poll for completion
+      // Step 4: Handle job_id poll or immediate result
       if (data.job_id && data.status === "running") {
-        const jobId = data.job_id;
+        const jobId = data.job_id as string;
         await new Promise<void>((resolve, reject) => {
           const iv = setInterval(async () => {
             try {
-              const poll = await fetch(`${API}/analysis/status/${jobId}`, { headers: ah });
+              const poll = await fetch(`${API}/technical-analysis/status/${jobId}`, { headers: liveAh() });
               const pd = await poll.json();
               if (pd.status === "complete") {
                 clearInterval(iv);
-                setResult(pd.result ?? pd);
+                setResult(normaliseResult(pd.result ?? pd, projectId));
                 resolve();
               } else if (pd.status === "error") {
                 clearInterval(iv);
-                reject(new Error(pd.message ?? "Analysis failed"));
+                reject(new Error(pd.error ?? pd.message ?? "Analysis failed"));
               }
             } catch (err) {
               clearInterval(iv);
@@ -351,14 +519,15 @@ export default function AnalysisPage() {
           }, 2000);
         });
       } else {
-        // Immediate result
-        setResult(data.result ?? data);
+        setResult(normaliseResult(data, projectId));
       }
     } catch (e: unknown) {
       setRunError(e instanceof Error ? e.message : "Analysis failed. Please try again.");
     }
+
     setRunning(false);
-  }, [projectId, ah]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, supplierFiles]);
 
   // ── PDF export ─────────────────────────────────────────────────────────────
   const handleExportPDF = useCallback((supplierName: string) => {
@@ -374,8 +543,8 @@ export default function AnalysisPage() {
     [result]
   );
 
-  const weightTotal   = useMemo(() => Object.values(weights).reduce((a, b) => a + b, 0), [weights]);
-  const weightsValid  = Math.abs(weightTotal - 100) < 1;
+  const weightTotal  = useMemo(() => Object.values(weights).reduce((a, b) => a + b, 0), [weights]);
+  const weightsValid = Math.abs(weightTotal - 100) < 1;
 
   const enrichedSuppliers = useMemo(() =>
     (result?.suppliers ?? []).map(s => ({
@@ -389,9 +558,10 @@ export default function AnalysisPage() {
   const top = enrichedSuppliers.find(s => !s._dq.dq) ?? enrichedSuppliers[0];
 
   const kpi = useMemo(() => {
-    const dqCount      = enrichedSuppliers.filter(s => s._dq.dq).length;
-    const topScore     = top?._weighted ?? null;
-    const totalQuestions = (result?.suppliers[0]?.category_scores ?? []).reduce((a, c) => a + (c.questions?.length ?? 0), 0);
+    const dqCount        = enrichedSuppliers.filter(s => s._dq.dq).length;
+    const topScore       = top?._weighted ?? null;
+    const totalQuestions = (result?.suppliers[0]?.category_scores ?? [])
+      .reduce((a, c) => a + (c.questions?.length ?? 0), 0);
     return { dqCount, topScore, totalQuestions };
   }, [enrichedSuppliers, top, result]);
 
@@ -400,6 +570,9 @@ export default function AnalysisPage() {
     : "Technical analysis agent idle — select a project and run analysis to begin";
 
   const isTickerActive = agentLogs.some(l => l.status === "running");
+
+  // ── Suppress unused-import warning for module-level `ah` constant ─────────
+  void ah;
 
   // ──────────────────────────────────────────────────────────────────────────
   return (
@@ -612,7 +785,7 @@ export default function AnalysisPage() {
                     </p>
                   </div>
                   {runError && (
-                    <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2 max-w-sm">{runError}</p>
+                    <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2 max-w-sm whitespace-pre-wrap">{runError}</p>
                   )}
                   {running && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -698,7 +871,7 @@ export default function AnalysisPage() {
                           <th className="sticky left-0 bg-muted px-3 py-2.5 text-left text-muted-foreground font-medium whitespace-nowrap border-b border-border border-r min-w-[200px]">
                             Requirement
                           </th>
-                          {enrichedSuppliers.map((s, i) => (
+                          {enrichedSuppliers.map(s => (
                             <th key={s.supplier_id} className="px-3 py-2.5 text-center text-muted-foreground font-medium whitespace-nowrap border-b border-border min-w-[150px]">
                               <div className="flex flex-col items-center gap-0.5">
                                 <span className={s._dq.dq ? "line-through text-muted-foreground/60" : ""}>{s.supplier_name}</span>
