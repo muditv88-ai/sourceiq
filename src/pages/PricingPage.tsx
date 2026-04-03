@@ -243,7 +243,7 @@ export default function PricingPage() {
           console.warn("[pricing] no files with category=supplier_responses, trying legacy fallback");
           // fallback: try legacy suppliers.json metadata
           const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
-          const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
+          const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name, name: (s.name??s.path?.split("/").pop()??"Unknown").replace(/\.[^.]+$/, "").trim()}));
           setSupplierFiles(legacy);
           if (!legacy.length) {
             setProjectLoadMsg("No supplier files found in this project");
@@ -494,7 +494,7 @@ export default function PricingPage() {
     }
   };
 
-  const removeSupplier = (name: string) => setStaged(prev=>prev.filter(s=>s.supplierName!==name));
+  const removeSupplier = (name: string) => setStaged(prev=>prev.filter(s=>s.supplierName!==name.replace(/\.[^.]+$/, "").trim()));
 
   const handleSort = (col: string) => {
     if (sortCol===col) {
