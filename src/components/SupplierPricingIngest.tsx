@@ -26,6 +26,7 @@ interface Diagnostics {
 }
 
 interface UploadResponse {
+  rows?: Record<string, unknown>[];
   staging_id: string;
   sheet_names: string[];
   selected_sheet: string;
@@ -104,7 +105,11 @@ const SupplierPricingIngest: React.FC<Props> = ({ projectId: propProjectId, onCo
       const res = await fetch(`${API_BASE}/pricing-analysis/reparse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staging_id: response.staging_id, sheet_name: sheet, header_row: hRow }),
+        body: JSON.stringify({
+          rows:          response.rows ?? [],
+          project_id:    projectId || "unassigned",
+          supplier_name: supplierName || response.diagnostics?.file_name,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
