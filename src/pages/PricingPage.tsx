@@ -225,29 +225,27 @@ export default function PricingPage() {
     const tok2 = localStorage.getItem("access_token") ?? "";
     const hdrs2 = { Authorization: `Bearer ${tok2}` };
     fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json())
-      .then(d => setSupplierFiles((d.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}))))
-      .catch(()=>{});
-    fetch(`${API}/projects/${projectId}/pricing-rows`, { headers: hdrs2 })
-      .then(r=>r.ok?r.json():null)
-      .then(d => {
-        if (!d) return;
-        let loaded: StagedSupplier[] = [];
-        if (Array.isArray(d?.suppliers) && d.suppliers.length) {
-          loaded = d.suppliers.map((s: {supplier_name:string; rows:BidRow[]}) => ({
-            supplierName: s.supplier_name, rows: s.rows ?? [],
-            fileName: s.supplier_name, sheetName: "", headerRow: 0,
-          }));
-        } else if (Array.isArray(d?.rows) && d.rows.length) {
-          const bySup = new Map<string, BidRow[]>();
-          (d.rows as BidRow[]).forEach((r: BidRow) => { const sn=String(r.supplier??"Unknown"); if(!bySup.has(sn))bySup.set(sn,[]); bySup.get(sn)!.push(r); });
-          bySup.forEach((rows,supplierName) => loaded.push({supplierName,rows,fileName:supplierName,sheetName:"",headerRow:0}));
-        } else if (Array.isArray(d) && d.length) {
-          const bySup = new Map<string, BidRow[]>();
-          (d as BidRow[]).forEach((r: BidRow) => { const sn=String(r.supplier??"Unknown"); if(!bySup.has(sn))bySup.set(sn,[]); bySup.get(sn)!.push(r); });
-          bySup.forEach((rows,supplierName) => loaded.push({supplierName,rows,fileName:supplierName,sheetName:"",headerRow:0}));
+      .then(async d => {
+        const files: SupplierFile[] = (d.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
+        setSupplierFiles(files);
+        // Auto-ingest any JSON sidecar rows files (_rows.json) stored in the project
+        const jsonFiles = files.filter(f => (f.filename??f.name??'').endsWith('_rows.json'));
+        const newStaged: StagedSupplier[] = [];
+        for (const jf of jsonFiles) {
+          try {
+            const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(jf.filename??jf.name)}/url`, { headers: hdrs2 });
+            if (!urlRes.ok) continue;
+            const { url } = await urlRes.json();
+            const data = await fetch(url).then(r=>r.json());
+            if (data?.supplier_name && Array.isArray(data?.rows) && data.rows.length) {
+              newStaged.push({ supplierName: data.supplier_name, rows: data.rows, fileName: jf.filename??jf.name, sheetName: "", headerRow: 0 });
+            }
+          } catch {}
         }
-        if (loaded.length) setStaged(loaded);
-      }).catch(()=>{});
+        if (newStaged.length) setStaged(newStaged);
+      })
+      .catch(()=>{});
+
   }, [projectId]);
 
   useEffect(() => {
@@ -313,10 +311,12 @@ export default function PricingPage() {
       body: JSON.stringify({ rows, project_id:projectId, supplier_name:sName }),
     }).catch(()=>{});
     if (projectId) {
-      await fetch(`${API}/projects/${projectId}/pricing-rows`, {
-        method:"POST", headers:{...ah,"Content-Type":"application/json"},
-        body: JSON.stringify({ suppliers: [{ supplier_name:sName, rows: rows.map(r=>({...r,supplier:sName})) }] }),
-      }).catch(()=>{});
+      // Persist rows as JSON sidecar so they reload on next project open
+      const rowBlob = new Blob([JSON.stringify({supplier_name:sName, rows})],{type:"application/json"});
+      const rowFd = new FormData();
+      rowFd.append("file", rowBlob, `${sName}_rows.json`);
+      rowFd.append("supplier_name", sName);
+      await fetch(`${API}/projects/${projectId}/supplier`,{method:"POST",headers:{Authorization:`Bearer ${localStorage.getItem("access_token")??""}` },body:rowFd}).catch(()=>{});
     }
     setStaged(prev => {
       const idx = prev.findIndex(s=>s.supplierName===sName);
@@ -542,7 +542,14 @@ export default function PricingPage() {
                 <CardHeader className="py-2 px-4 flex-row items-center justify-between">
                   <CardTitle className="text-xs uppercase tracking-wider text-muted-foreground">In Comparison</CardTitle>
                   {projectId&&staged.length>0&&<Button size="sm" variant="ghost" className="h-6 text-[10px] gap-1 text-primary" onClick={async()=>{
-                    await fetch(`${API}/projects/${projectId}/pricing-rows`,{method:"POST",headers:{...ah,"Content-Type":"application/json"},body:JSON.stringify({suppliers:staged.map(s=>({supplier_name:s.supplierName,rows:s.rows.map(r=>({...r,supplier:s.supplierName}))}))})}).catch(()=>{});
+                    // Save each staged supplier's rows as JSON sidecar file
+                    for (const s of staged) {
+                      const blob = new Blob([JSON.stringify({supplier_name:s.supplierName,rows:s.rows})],{type:"application/json"});
+                      const fd3 = new FormData();
+                      fd3.append("file", blob, `${s.supplierName}_rows.json`);
+                      fd3.append("supplier_name", s.supplierName);
+                      await fetch(`${API}/projects/${projectId}/supplier`,{method:"POST",headers:{Authorization:`Bearer ${localStorage.getItem("access_token")??""}` },body:fd3}).catch(()=>{});
+                    }
                     const el=document.getElementById('save-toast');if(el){el.style.opacity='1';setTimeout(()=>{el.style.opacity='0';},2000);}
                   }}><Save className="w-3 h-3"/>Save</Button>}
                 </CardHeader>
