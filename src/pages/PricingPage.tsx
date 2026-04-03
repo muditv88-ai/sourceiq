@@ -349,9 +349,15 @@ export default function PricingPage() {
                 ? `${API}/files/${projectId}/${fId}/url`
                 : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.display_name)}/url`;
               const urlRes = await fetch(urlEp, { headers: { Authorization: `Bearer ${token}` } });
-              if (!urlRes.ok) continue;
+              if (!urlRes.ok) { console.warn("[auto-ingest] url fetch", urlRes.status); continue; }
               const { url } = await urlRes.json();
-              const blob = await fetch(url).then(r => r.blob());
+              // Proxy through backend to avoid CORS on signed GCS URLs
+              const dlEp = /^[0-9a-f-]{36}$/i.test(fId)
+                ? `${API}/files/${projectId}/${fId}/download`
+                : url;
+              const blobRes = await fetch(dlEp, { headers: { Authorization: `Bearer ${token}` } });
+              if (!blobRes.ok) { console.warn("[auto-ingest] download", blobRes.status); continue; }
+              const blob = await blobRes.blob();
               const fd = new FormData();
               fd.append("file", blob, f.filename ?? f.display_name ?? "file");
               const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
