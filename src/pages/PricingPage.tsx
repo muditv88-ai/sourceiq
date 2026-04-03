@@ -255,13 +255,11 @@ export default function PricingPage() {
             for (const f of legacy) {
               try {
                 const fname = f.filename ?? f.name ?? "file.xlsx";
-                const urlRes = await fetch(
-                  `${API}/files/${projectId}/supplier/${encodeURIComponent(fname)}/url`,
-                  { headers: hdrs2 }
-                );
-                if (!urlRes.ok) { console.warn("[legacy-ingest] url", urlRes.status, fname); continue; }
-                const { url } = await urlRes.json();
-                const blob = await fetch(url).then(r => r.blob());
+                // Stream via backend to avoid GCS CORS on signed URLs
+                const dlUrl = `${API}/files/${projectId}/supplier/${encodeURIComponent(fname)}/download`;
+                const dlRes = await fetch(dlUrl, { headers: hdrs2 });
+                if (!dlRes.ok) { console.warn("[legacy-ingest] download", dlRes.status, fname); continue; }
+                const blob = await dlRes.blob();
                 const fd = new FormData();
                 fd.append("file", blob, fname);
                 const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
