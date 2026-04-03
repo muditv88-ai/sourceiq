@@ -468,6 +468,24 @@ export default function PricingPage() {
               </select>
               <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </div>
+            <button
+              onClick={refreshComparison}
+              disabled={loadingComp || !projectId}
+              title="Refresh tables"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs text-foreground hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {loadingComp ? (
+                <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                  <path d="M21 3v5h-5"/>
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                  <path d="M8 16H3v5"/>
+                </svg>
+              )}
+              Refresh
+            </button>
             <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={()=>navigate("/scenario-builder")}>
               <BarChart3 className="w-3.5 h-3.5"/>Scenario Builder<ArrowRight className="w-3 h-3"/>
             </Button>
