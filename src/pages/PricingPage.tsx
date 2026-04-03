@@ -234,10 +234,12 @@ export default function PricingPage() {
     setProjectLoading(true);
     setProjectLoadMsg("Loading project files…");
     // Use the persistent file library endpoint
+    console.log("[pricing] loading files for project:", projectId);
     fetch(`${API}/files/${projectId}?category=supplier_responses`, { headers: hdrs2 })
       .then(r => r.ok ? r.json() : [])
       .then(async (files: {id:string; filename:string; display_name:string; size_bytes:number}[]) => {
         if (!files.length) {
+          console.warn("[pricing] no files with category=supplier_responses, trying legacy fallback");
           // fallback: try legacy suppliers.json metadata
           const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
           const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name}));
@@ -246,7 +248,7 @@ export default function PricingPage() {
           setProjectLoading(false);
           return;
         }
-        const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: f.display_name??f.filename, filename: f.filename, id: f.id }));
+        const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: (f as any).display_name??f.filename, filename: f.filename, id: f.id }));
         setSupplierFiles(mapped);
         setProjectLoadMsg(`Found ${files.length} supplier file${files.length>1?'s':''}. Auto-loading bids…`);
         // ── auto-ingest all files into staged ──
@@ -255,6 +257,7 @@ export default function PricingPage() {
             try {
               const fId = f.id;
               const dlEp = `${API}/files/${projectId}/${fId}/download`;
+              console.log("[auto-ingest] downloading", dlEp);
               const blobRes = await fetch(dlEp, { headers: hdrs2 });
               if (!blobRes.ok) { console.warn("[auto-ingest] download", blobRes.status, dlEp); continue; }
               const blob = await blobRes.blob();
@@ -268,7 +271,7 @@ export default function PricingPage() {
               if (!res.ok) { console.warn("[auto-ingest] ingest", res.status, await res.text()); continue; }
               const data = await res.json();
               const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
-              const sName: string = data.supplier_name ?? f.display_name ?? f.filename ?? "Unknown";
+              const sName: string = data.supplier_name ?? (f as any).display_name ?? f.filename ?? "Unknown";
               if (rows.length) {
                 setStaged(prev => {
                   const without = prev.filter(s => s.supplierName !== sName);
