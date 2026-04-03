@@ -1,249 +1,265 @@
-import React, { useState } from "react";
-import { DollarSign, TrendingDown, BarChart2, Filter, Download } from "lucide-react";
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  TrendingDown, Users, BarChart3, ArrowUpDown,
+  ChevronUp, ChevronDown, AlertCircle,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import SupplierPricingIngest from "@/components/SupplierPricingIngest";
 
-interface PriceRow {
-  id: string;
-  lineItem: string;
-  category: string;
-  unitOfMeasure: string;
-  supplier: string;
-  unitPrice: number;
-  quantity: number;
-  total: number;
-  delta: number;
-  currency?: string;
+const API_BASE =
+  (import.meta as unknown as { env: Record<string, string> }).env?.VITE_API_URL ??
+  "http://localhost:8000";
+
+interface KPIs {
+  bids_received: number;
+  suppliers_compared: number;
+  potential_savings_pct: number | null;
+  avg_delta_pct: number | null;
+  baseline: number | null;
+  baseline_source: string | null;
+  lowest_bid: number | null;
+  highest_bid: number | null;
 }
 
+interface BidRow {
+  item?: string;
+  supplier?: string;
+  unit?: string;
+  quantity?: number | string;
+  unit_price?: number | null;
+  total_price?: number | null;
+  currency?: string;
+  delta_pct?: number | null;
+  bid_position?: string;
+  [key: string]: unknown;
+}
+
+type SortDir = "asc" | "desc";
+
+const fmt = (n: number | null | undefined, decimals = 2) =>
+  n == null ? "—" : n.toLocaleString("en-IN", { maximumFractionDigits: decimals });
+
+const DeltaBadge: React.FC<{ val: number | null | undefined }> = ({ val }) => {
+  if (val == null) return <span className="text-muted-foreground">—</span>;
+  const positive = val > 0;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular-nums
+      ${positive ? "text-red-600 dark:text-red-400" : "text-green-600 dark:text-green-400"}`}>
+      {positive ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      {Math.abs(val).toFixed(1)}%
+    </span>
+  );
+};
+
+const KPICard: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  highlight?: "green" | "amber" | "default";
+}> = ({ icon, label, value, sub, highlight = "default" }) => {
+  const accent = {
+    green: "text-green-600 dark:text-green-400",
+    amber: "text-amber-600 dark:text-amber-400",
+    default: "text-foreground",
+  }[highlight];
+  return (
+    <Card>
+      <CardContent className="pt-5 pb-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="space-y-1 min-w-0">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+            <p className={`text-2xl font-semibold tabular-nums leading-tight ${accent}`}>{value}</p>
+            {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+          </div>
+          <div className="text-muted-foreground/60 shrink-0 mt-0.5">{icon}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+const PROJECT_ID = "proj-default";
+
 const PricingPage: React.FC = () => {
-  const [rows, setRows] = useState<PriceRow[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string>("All");
+  const [kpis, setKpis] = useState<KPIs | null>(null);
+  const [bids, setBids] = useState<BidRow[]>([]);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [sortCol, setSortCol] = useState<string>("unit_price");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const categories = ["All", ...Array.from(new Set(rows.map((r) => r.category)))];
-  const filtered = activeCategory === "All" ? rows : rows.filter((r) => r.category === activeCategory);
-
-  const totalSpend = rows.reduce((s, r) => s + r.total, 0);
-  const avgDelta   = rows.length ? rows.reduce((s, r) => s + r.delta, 0) / rows.length : 0;
-  const suppliers  = new Set(rows.map((r) => r.supplier)).size;
-
-  // Auto-detect currency from data, default to USD
-  const currency = rows[0]?.currency ?? "USD";
-  const fmt = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
-
-  const handleCommit = (newRows: Record<string, unknown>[]) => {
-    setRows((prev) => {
-      const merged = [...prev];
-      for (const raw of newRows) {
-        const row = raw as PriceRow;
-        const idx = merged.findIndex(
-          (r) => r.lineItem === row.lineItem && r.supplier === row.supplier
-        );
-        if (idx >= 0) merged[idx] = row;
-        else merged.push(row);
+  const fetchData = useCallback(async () => {
+    try {
+      const [kRes, bRes] = await Promise.all([
+        fetch(`${API_BASE}/pricing-analysis/summary/${PROJECT_ID}`),
+        fetch(`${API_BASE}/pricing-analysis/bids/${PROJECT_ID}`),
+      ]);
+      if (kRes.ok) setKpis(await kRes.json());
+      if (bRes.ok) {
+        const data = await bRes.json();
+        setBids(data.bids ?? []);
+        setColumns(data.columns ?? []);
       }
-      return merged;
-    });
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchData(); }, [fetchData, refreshKey]);
+
+  const handleCommit = () => setRefreshKey((k) => k + 1);
+
+  const sorted = [...bids].sort((a, b) => {
+    const av = a[sortCol]; const bv = b[sortCol];
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    const cmp = typeof av === "number" && typeof bv === "number"
+      ? av - bv
+      : String(av).localeCompare(String(bv));
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
+  const toggleSort = (col: string) => {
+    if (col === sortCol) setSortDir((d) => d === "asc" ? "desc" : "asc");
+    else { setSortCol(col); setSortDir("asc"); }
   };
 
-  // Pivot data for comparison table
-  const supplierList = [...new Set(filtered.map((r) => r.supplier))].sort();
-  const lineItems    = [...new Set(filtered.map((r) => r.lineItem))];
+  const HIDDEN_COLS = new Set(["project_id"]);
+  const visibleCols = columns.filter((c) => !HIDDEN_COLS.has(c));
+
+  const colLabel = (c: string) =>
+    c.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Pricing Analysis</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Upload supplier sheets to compare bids and identify savings.
-          </p>
-        </div>
-        {rows.length > 0 && (
-          <Button variant="outline" size="sm" className="gap-1.5">
-            <Download className="h-4 w-4" /> Export
-          </Button>
-        )}
+    <div className="space-y-6 p-6">
+      <div>
+        <h1 className="text-xl font-semibold text-foreground">Pricing Analysis</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          Upload supplier bids, compare line items, and identify savings opportunities.
+        </p>
       </div>
 
-      {/* KPI Strip */}
-      {rows.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                <DollarSign className="h-3.5 w-3.5" /> Total Quoted Spend
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">{fmt(totalSpend)}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                <TrendingDown className="h-3.5 w-3.5" /> Avg. Price Delta vs Baseline
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className={`text-2xl font-semibold tabular-nums ${avgDelta < 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
-                {avgDelta > 0 ? "+" : ""}{avgDelta.toFixed(1)}%
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                <BarChart2 className="h-3.5 w-3.5" /> Suppliers Compared
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">{suppliers}</p>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      {/* ── KPI Cards ── */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <KPICard
+          icon={<TrendingDown className="h-5 w-5" />}
+          label="Potential Savings"
+          value={kpis?.potential_savings_pct != null ? `${kpis.potential_savings_pct.toFixed(1)}%` : "—"}
+          sub={
+            kpis?.baseline != null
+              ? `vs ${kpis.baseline_source === "median_of_bids" ? "median" : "baseline"} ${fmt(kpis.baseline)}`
+              : "Upload bids to calculate"
+          }
+          highlight={kpis?.potential_savings_pct != null && kpis.potential_savings_pct > 0 ? "green" : "default"}
+        />
+        <KPICard
+          icon={<Users className="h-5 w-5" />}
+          label="Bids Received"
+          value={kpis ? String(kpis.bids_received) : "—"}
+          sub={kpis?.suppliers_compared ? `${kpis.suppliers_compared} supplier${kpis.suppliers_compared > 1 ? "s" : ""} compared` : undefined}
+        />
+        <KPICard
+          icon={<BarChart3 className="h-5 w-5" />}
+          label="Avg Delta from Baseline"
+          value={kpis?.avg_delta_pct != null ? `${kpis.avg_delta_pct > 0 ? "+" : ""}${kpis.avg_delta_pct.toFixed(1)}%` : "—"}
+          sub={
+            kpis?.baseline_source === "median_of_bids"
+              ? "Baseline = median of bids"
+              : kpis?.baseline_source === "provided"
+              ? "Baseline from RFP template"
+              : "No bids uploaded yet"
+          }
+          highlight={
+            kpis?.avg_delta_pct == null ? "default"
+            : kpis.avg_delta_pct < 0 ? "green"
+            : kpis.avg_delta_pct > 5 ? "amber"
+            : "default"
+          }
+        />
+      </div>
 
-      {/* Upload Panel */}
-      <SupplierPricingIngest projectId="unassigned" onCommit={handleCommit} />
+      {/* ── Upload ── */}
+      <SupplierPricingIngest projectId={PROJECT_ID} onCommit={handleCommit} />
 
-      {/* Supplier Bid Comparison Table */}
-      {rows.length > 0 && (
+      {/* ── Bid Table ── */}
+      {bids.length > 0 && (
         <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <CardTitle className="text-sm font-medium">Supplier Bid Comparison</CardTitle>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-                {categories.map((cat) => (
-                  <Badge
-                    key={cat}
-                    variant={activeCategory === cat ? "default" : "outline"}
-                    className="cursor-pointer text-xs"
-                    onClick={() => setActiveCategory(cat)}
-                  >
-                    {cat}
-                  </Badge>
-                ))}
-              </div>
-            </div>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center justify-between text-base">
+              <span>All Bids</span>
+              <Badge variant="secondary">{bids.length} line items</Badge>
+            </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/40">
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap sticky left-0 bg-muted/40 z-10">
-                      Line Item
-                    </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">
-                      Category
-                    </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">
-                      UoM
-                    </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">
-                      Qty
-                    </th>
-                    {supplierList.map((s) => (
+                    {visibleCols.map((col) => (
                       <th
-                        key={s}
-                        className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground whitespace-nowrap"
+                        key={col}
+                        onClick={() => toggleSort(col)}
+                        className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground
+                          whitespace-nowrap cursor-pointer hover:text-foreground select-none"
                       >
-                        {s}
+                        <span className="inline-flex items-center gap-1">
+                          {colLabel(col)}
+                          {sortCol === col
+                            ? sortDir === "asc"
+                              ? <ChevronUp className="h-3 w-3" />
+                              : <ChevronDown className="h-3 w-3" />
+                            : <ArrowUpDown className="h-3 w-3 opacity-30" />}
+                        </span>
                       </th>
                     ))}
-                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">
-                      Best Bid
-                    </th>
-                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">
-                      Savings
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {lineItems.map((lineItem) => {
-                    const itemRows   = filtered.filter((r) => r.lineItem === lineItem);
-                    const ref        = itemRows[0];
-                    const priceMap   = Object.fromEntries(itemRows.map((r) => [r.supplier, r.unitPrice]));
-                    const prices     = Object.values(priceMap).filter((p) => p != null) as number[];
-                    const bestPrice  = prices.length ? Math.min(...prices) : null;
-                    const worstPrice = prices.length ? Math.max(...prices) : null;
-                    const savings    =
-                      bestPrice != null && worstPrice != null && worstPrice !== bestPrice
-                        ? ((worstPrice - bestPrice) / worstPrice) * 100
-                        : 0;
-
-                    return (
-                      <tr
-                        key={lineItem}
-                        className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
-                      >
-                        {/* Line Item */}
-                        <td className="px-4 py-2.5 font-medium sticky left-0 bg-background z-10 whitespace-nowrap">
-                          {lineItem}
-                        </td>
-                        {/* Category */}
-                        <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
-                          {ref?.category ?? "—"}
-                        </td>
-                        {/* UoM */}
-                        <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
-                          {ref?.unitOfMeasure ?? "—"}
-                        </td>
-                        {/* Qty */}
-                        <td className="px-4 py-2.5 tabular-nums text-muted-foreground">
-                          {ref?.quantity != null ? ref.quantity.toLocaleString() : "—"}
-                        </td>
-                        {/* One column per supplier */}
-                        {supplierList.map((s) => {
-                          const price   = priceMap[s] ?? null;
-                          const isBest  = price != null && price === bestPrice  && prices.length > 1;
-                          const isWorst = price != null && price === worstPrice && prices.length > 1;
-                          return (
-                            <td
-                              key={s}
-                              className={`px-4 py-2.5 tabular-nums text-right font-medium ${
-                                isBest
-                                  ? "text-green-600 dark:text-green-400"
-                                  : isWorst
+                  {sorted.map((row, i) => (
+                    <tr
+                      key={i}
+                      className={`border-b border-border last:border-0 transition-colors
+                        ${row.bid_position === "🥇 Lowest"
+                          ? "bg-green-50/60 dark:bg-green-950/20"
+                          : i % 2 === 0 ? "bg-background" : "bg-muted/10"
+                        }`}
+                    >
+                      {visibleCols.map((col) => (
+                        <td key={col} className="px-4 py-2.5 whitespace-nowrap tabular-nums">
+                          {col === "delta_pct"
+                            ? <DeltaBadge val={row[col] as number | null} />
+                            : col === "bid_position"
+                            ? <span className={`text-xs font-medium
+                                ${row[col] === "🥇 Lowest"
+                                  ? "text-green-700 dark:text-green-400"
+                                  : row[col] === "Highest"
                                   ? "text-red-600 dark:text-red-400"
-                                  : ""
-                              }`}
-                            >
-                              {price != null ? (
-                                fmt(price)
-                              ) : (
-                                <span className="text-muted-foreground/40 text-xs italic">—</span>
-                              )}
-                            </td>
-                          );
-                        })}
-                        {/* Best Bid */}
-                        <td className="px-4 py-2.5 tabular-nums text-right font-semibold text-green-600 dark:text-green-400">
-                          {bestPrice != null ? fmt(bestPrice) : "—"}
+                                  : "text-muted-foreground"}`}>
+                                {String(row[col] ?? "—")}
+                              </span>
+                            : col === "unit_price" || col === "total_price"
+                            ? <span className="font-mono">
+                                {row[col] != null ? fmt(row[col] as number) : "—"}
+                              </span>
+                            : <span className="text-muted-foreground">
+                                {row[col] != null ? String(row[col]) : "—"}
+                              </span>
+                          }
                         </td>
-                        {/* Savings % */}
-                        <td className="px-4 py-2.5 tabular-nums text-right">
-                          {savings > 0 ? (
-                            <span className="text-green-600 dark:text-green-400 font-medium">
-                              {savings.toFixed(1)}%
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground/40 text-xs italic">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
+
+            {kpis?.baseline_source === "median_of_bids" && (
+              <div className="flex items-center gap-2 border-t border-border px-4 py-2.5 text-xs text-muted-foreground">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                Baseline not provided — using median of all bids ({fmt(kpis.baseline)}) as reference.
+                Upload an RFP template with target prices to override.
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
