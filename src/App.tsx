@@ -27,85 +27,75 @@ import CopilotPage from "@/pages/CopilotPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
-const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "";
+// Use a dummy clientId if not set — Google OAuth will gracefully disable if not configured
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "dummy-client-id-for-dev";
 
-const App = () => {
-  // Wrap with GoogleOAuthProvider only if clientId is set
-  const innerContent = (
-    <TooltipProvider>
-      <Toaster />
-      <BrowserRouter>
-        <AuthProvider>
-          <AgentProvider>
-            <CommsProvider>
-              <Routes>
-                {/* Public */}
-                <Route path="/login" element={<LoginPage />} />
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+      <TooltipProvider>
+        <Toaster />
+        <BrowserRouter>
+          <AuthProvider>
+            <AgentProvider>
+              <CommsProvider>
+                <Routes>
+                  {/* Public */}
+                  <Route path="/login" element={<LoginPage />} />
 
-                {/* Protected */}
-                <Route path="/*" element={
-                  <AuthGuard>
-                    <AppLayout>
-                      <Routes>
-                        {/* Core */}
-                        <Route path="/"                    element={<DashboardPage />} />
-                        <Route path="/projects"            element={<ProjectsPage />} />
-                        {/* FM-1: Project Detail */}
-                        <Route path="/projects/:id"        element={<ProjectDetailPage />} />
+                  {/* Protected */}
+                  <Route path="/*" element={
+                    <AuthGuard>
+                      <AppLayout>
+                        <Routes>
+                          {/* Core */}
+                          <Route path="/"                    element={<DashboardPage />} />
+                          <Route path="/projects"            element={<ProjectsPage />} />
+                          {/* FM-1: Project Detail */}
+                          <Route path="/projects/:id"        element={<ProjectDetailPage />} />
 
-                        {/* FM-2: RFP */}
-                        <Route path="/rfp/new"             element={<NewRfpPage />} />
+                          {/* FM-2: RFP */}
+                          <Route path="/rfp/new"             element={<NewRfpPage />} />
 
-                        {/* FM-3: Supplier Management */}
-                        <Route path="/suppliers"           element={<SuppliersPage />} />
-                        <Route path="/suppliers/manage"    element={<SupplierManagementPage />} />
+                          {/* FM-3: Supplier Management */}
+                          <Route path="/suppliers"           element={<SuppliersPage />} />
+                          <Route path="/suppliers/manage"    element={<SupplierManagementPage />} />
 
-                        {/* FM-4: Supplier Responses */}
-                        <Route path="/supplier-responses"  element={<SupplierResponsesPage />} />
+                          {/* FM-4: Supplier Responses */}
+                          <Route path="/supplier-responses"  element={<SupplierResponsesPage />} />
 
-                        {/* FM-5: Communications */}
-                        <Route path="/communications"      element={<CommunicationsPage />} />
+                          {/* FM-5: Communications */}
+                          <Route path="/communications"      element={<CommunicationsPage />} />
 
-                        {/* FM-6: Technical Analysis */}
-                        <Route path="/analysis"            element={<AnalysisPage />} />
+                          {/* FM-6: Technical Analysis */}
+                          <Route path="/analysis"            element={<AnalysisPage />} />
 
-                        {/* FM-7: Pricing */}
-                        <Route path="/pricing"             element={<PricingPage />} />
+                          {/* FM-7: Pricing */}
+                          <Route path="/pricing"             element={<PricingPage />} />
 
-                        {/* FM-8: Award Scenarios */}
-                        <Route path="/scenarios"           element={<ScenariosPage />} />
+                          {/* FM-8: Award Scenarios */}
+                          <Route path="/scenarios"           element={<ScenariosPage />} />
 
-                        {/* FM-9: AI Copilot */}
-                        <Route path="/copilot"             element={<CopilotPage />} />
+                          {/* FM-9: AI Copilot */}
+                          <Route path="/copilot"             element={<CopilotPage />} />
 
-                        {/* Supporting */}
-                        <Route path="/drawings"            element={<DrawingsPage />} />
-                        <Route path="/documents"           element={<DocumentsPage />} />
-                        <Route path="/agent-analytics"     element={<AgentAnalyticsPage />} />
-                        <Route path="*"                    element={<NotFound />} />
-                      </Routes>
-                    </AppLayout>
-                  </AuthGuard>
-                } />
-              </Routes>
-            </CommsProvider>
-          </AgentProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  );
-
-  return (
-    <QueryClientProvider client={queryClient}>
-      {GOOGLE_CLIENT_ID ? (
-        <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-          {innerContent}
-        </GoogleOAuthProvider>
-      ) : (
-        innerContent
-      )}
-    </QueryClientProvider>
-  );
-};
+                          {/* Supporting */}
+                          <Route path="/drawings"            element={<DrawingsPage />} />
+                          <Route path="/documents"           element={<DocumentsPage />} />
+                          <Route path="/agent-analytics"     element={<AgentAnalyticsPage />} />
+                          <Route path="*"                    element={<NotFound />} />
+                        </Routes>
+                      </AppLayout>
+                    </AuthGuard>
+                  } />
+                </Routes>
+              </CommsProvider>
+            </AgentProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </TooltipProvider>
+    </GoogleOAuthProvider>
+  </QueryClientProvider>
+);
 
 export default App;
