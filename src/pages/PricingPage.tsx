@@ -11,10 +11,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { ChevronUp, ChevronDown, ChevronsUpDown, ArrowRight, BarChart3, FlaskConical, Download, Save } from "lucide-react";
 
-#const API = "/api";
-
-// To this:
-const API = "http://localhost:8000";
+const API = "/api";
 
 interface Project { id: string; name: string; }
 interface SupplierFile { path: string; name: string; filename?: string; }
