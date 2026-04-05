@@ -2,7 +2,6 @@ import React, { createContext, useContext, useCallback, useRef, useState, useEff
 import type { AgentActivity, AgentStatus } from '@/lib/agents';
 import { getToken } from '@/lib/auth';
 
-const BACKEND = import.meta.env.VITE_API_URL ?? 'https://muditv88-ai-sourceiq-backend.hf.space';
 const POLL_MS = 3000; // poll every 3 seconds
 
 interface AgentContextValue {
@@ -46,7 +45,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       if (!token || token === 'undefined' || token === 'null' || token.trim() === '') return;
 
       try {
-        const res = await fetch(`${BACKEND}/agent-logs`, {
+        const res = await fetch(`/api/agent-logs`, {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,

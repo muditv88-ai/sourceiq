@@ -9,9 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
-const API_BASE =
-  (import.meta as unknown as { env: Record<string, string> }).env?.VITE_API_URL ??
-  "http://localhost:8000";
+const API_BASE = "/api";
 
 interface Diagnostics {
   file_name: string;

@@ -292,13 +292,11 @@ export default function PricingPage() {
           for (const f of files) {
             try {
               const fname = f.filename ?? f.display_name ?? "file";
-              const dlEp = `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(fname)}/url`;
-              console.log("[auto-ingest] downloading", dlEp);
-              const urlRes = await fetch(dlEp, { headers: hdrs2 });
-              if (!urlRes.ok) { console.warn("[auto-ingest] download", urlRes.status, dlEp); continue; }
-              const { url } = await urlRes.json();
-              const blobRes = await fetch(url, { headers: hdrs2 });
-              if (!blobRes.ok) { console.warn("[auto-ingest] download blob", blobRes.status, dlEp); continue; }
+              // Use /content endpoint to avoid GCS CORS issues
+              const contentEp = `${API}/files/${projectId}/${f.id}/content`;
+              console.log("[auto-ingest] downloading", contentEp);
+              const blobRes = await fetch(contentEp, { headers: hdrs2 });
+              if (!blobRes.ok) { console.warn("[auto-ingest] download blob", blobRes.status, contentEp); continue; }
               const blob = await blobRes.blob();
               const fd = new FormData();
               fd.append("file", blob, f.filename ?? f.display_name ?? "file");
@@ -364,7 +362,9 @@ export default function PricingPage() {
       const sheetToSend = sheetOverride ?? selectedSheet;
       if (sheetToSend) fd.append("sheet_name", sheetToSend);
       const res  = await fetch(`${API}/pricing-analysis/ingest-v2`, { method:"POST", headers:ah, body:fd });
+      if (!res.ok) throw new Error(`ingest-v2 returned ${res.status}`);
       const data: IngestV2Result = await res.json();
+      if (!data?.diagnostics) throw new Error("Invalid response from ingest-v2");
       setParsed(data);
       if (data.sheet_names?.length) {
         setSheetNames(data.sheet_names);
@@ -378,9 +378,9 @@ export default function PricingPage() {
   const getBlob = async (): Promise<{blob:Blob;fname:string}|null> => {
     if (ingestMode==="project"&&selectedFile) {
       try {
-        const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(selectedFile.filename??selectedFile.name)}/url`, { headers:ah });
-        const { url } = await urlRes.json();
-        return { blob: await fetch(url).then(r=>r.blob()), fname: selectedFile.filename??selectedFile.name };
+        // Use /content endpoint to avoid GCS CORS issues
+        const contentUrl = `${API}/files/${projectId}/${(selectedFile as any).id}/content`;
+        return { blob: await fetch(contentUrl, { headers:ah }).then(r=>r.blob()), fname: selectedFile.filename??selectedFile.name };
       } catch { return null; }
     }
     if (uploadFile) return { blob: uploadFile, fname: uploadFile.name };
