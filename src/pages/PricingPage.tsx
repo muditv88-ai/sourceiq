@@ -24,7 +24,7 @@ import {
   Save,
 } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "/api";
 
 interface Project {
   id: string;
