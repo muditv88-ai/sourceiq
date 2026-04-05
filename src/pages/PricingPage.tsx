@@ -252,9 +252,12 @@ export default function PricingPage() {
             for (const f of legacy) {
               try {
                 const fname = f.filename ?? f.name ?? "file.xlsx";
-                const dlUrl = `${API}/files/${projectId}/supplier/${encodeURIComponent(fname)}/download`;
-                const dlRes = await fetch(dlUrl, { headers: hdrs2 });
-                if (!dlRes.ok) { console.warn("[legacy-ingest] download", dlRes.status, fname); continue; }
+                const dlUrl = `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(fname)}/url`;
+                const urlRes = await fetch(dlUrl, { headers: hdrs2 });
+                if (!urlRes.ok) { console.warn("[legacy-ingest] download", urlRes.status, fname); continue; }
+                const { url } = await urlRes.json();
+                const dlRes = await fetch(url, { headers: hdrs2 });
+                if (!dlRes.ok) { console.warn("[legacy-ingest] download blob", dlRes.status, fname); continue; }
                 const blob = await dlRes.blob();
                 const fd = new FormData();
                 fd.append("file", blob, fname);
@@ -288,11 +291,14 @@ export default function PricingPage() {
         (async () => {
           for (const f of files) {
             try {
-              const fId = f.id;
-              const dlEp = `${API}/files/${projectId}/${fId}/download`;
+              const fname = f.filename ?? f.display_name ?? "file";
+              const dlEp = `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(fname)}/url`;
               console.log("[auto-ingest] downloading", dlEp);
-              const blobRes = await fetch(dlEp, { headers: hdrs2 });
-              if (!blobRes.ok) { console.warn("[auto-ingest] download", blobRes.status, dlEp); continue; }
+              const urlRes = await fetch(dlEp, { headers: hdrs2 });
+              if (!urlRes.ok) { console.warn("[auto-ingest] download", urlRes.status, dlEp); continue; }
+              const { url } = await urlRes.json();
+              const blobRes = await fetch(url, { headers: hdrs2 });
+              if (!blobRes.ok) { console.warn("[auto-ingest] download blob", blobRes.status, dlEp); continue; }
               const blob = await blobRes.blob();
               const fd = new FormData();
               fd.append("file", blob, f.filename ?? f.display_name ?? "file");
@@ -372,7 +378,7 @@ export default function PricingPage() {
   const getBlob = async (): Promise<{blob:Blob;fname:string}|null> => {
     if (ingestMode==="project"&&selectedFile) {
       try {
-        const urlRes = await fetch(`${API}/files/${projectId}/supplier/${encodeURIComponent(selectedFile.filename??selectedFile.name)}/url`, { headers:ah });
+        const urlRes = await fetch(`${API}/projects/${projectId}/files/supplier/${encodeURIComponent(selectedFile.filename??selectedFile.name)}/url`, { headers:ah });
         const { url } = await urlRes.json();
         return { blob: await fetch(url).then(r=>r.blob()), fname: selectedFile.filename??selectedFile.name };
       } catch { return null; }
@@ -603,15 +609,12 @@ export default function PricingPage() {
                               setSelectedFile(f);
                               if (!supplierName) setSupplierName(f.name);
                               try {
-                                const fId = (f as any).id;
-                                const isUUIDf = fId && /^[0-9a-f-]{36}$/i.test(fId);
-                                const urlEp = isUUIDf
-                                  ? `${API}/files/${projectId}/${fId}/url`
-                                  : `${API}/files/${projectId}/supplier/${encodeURIComponent(f.filename??f.name)}/url`;
+                                const fname = f.filename ?? f.name;
+                                const urlEp = `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(fname)}/url`;
                                 const urlRes = await fetch(urlEp, { headers:ah });
                                 const { url } = await urlRes.json();
                                 const blob = await fetch(url).then(r=>r.blob());
-                                await doIngest(blob, f.filename??f.name, 0, f.name);
+                                await doIngest(blob, fname, 0, f.name);
                               } catch {}
                             }}
                               className={`flex-1 text-left px-3 py-2 rounded-md text-xs transition-colors border ${selectedFile?.path===f.path?"bg-primary/10 border-primary/40 text-primary":"bg-background border-border hover:border-primary/30"}`}>

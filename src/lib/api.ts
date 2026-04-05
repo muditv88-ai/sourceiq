@@ -495,17 +495,33 @@ export const api = {
       `/files/${projectId}${category ? `?category=${category}` : ""}`
     ),
 
-  uploadFile: (file: File, projectId: string, category: string, displayName: string) => {
+  uploadFile: (params: { file: File; project_id: string; category: string; user_id: string; display_name?: string }) => {
     const fd = new FormData();
-    fd.append("file", file);
-    fd.append("project_id", projectId);
-    fd.append("category", category);
-    fd.append("display_name", displayName);
-    return request<{ id: string; display_name: string; filename: string }>("/files/upload", {
+    fd.append("file", params.file);
+    fd.append("project_id", params.project_id);
+    fd.append("category", params.category);
+    fd.append("user_id", params.user_id);
+    if (params.display_name) fd.append("display_name", params.display_name);
+    return request<{ id: string; display_name: string; filename: string; category: string; content_type: string; size_bytes: number; analysis_status: string; created_at: string }>("/files/upload", {
       method: "POST",
       body: fd,
     });
   },
+
+  getFileUrl: (projectId: string, fileId: string, expiryMinutes = 60) =>
+    request<{ file_id: string; filename: string; url: string; expires_in_minutes: number }>(
+      `/files/${projectId}/${fileId}/url?expiry_minutes=${expiryMinutes}`
+    ),
+
+  analyseFile: (projectId: string, fileId: string, analysisType: string) =>
+    request<{ file_id: string; analysis_status: string; result: Record<string, unknown> }>(
+      `/files/${projectId}/${fileId}/analyse`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ analysis_type: analysisType }),
+      }
+    ),
 
   deleteFile: (projectId: string, fileId: string) =>
     request<{ deleted: boolean }>(`/files/${projectId}/${fileId}`, { method: "DELETE" }),
