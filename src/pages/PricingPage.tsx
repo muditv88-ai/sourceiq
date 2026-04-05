@@ -238,51 +238,11 @@ export default function PricingPage() {
       .then(r => r.ok ? r.json() : [])
       .then(async (files: {id:string; filename:string; display_name:string; size_bytes:number}[]) => {
         if (!files.length) {
-          console.warn("[pricing] no files with category=supplier_responses, trying legacy fallback");
-          const proj = await fetch(`${API}/projects/${projectId}`, { headers: hdrs2 }).then(r=>r.json()).catch(()=>({}));
-          const legacy: SupplierFile[] = (proj.suppliers??[]).map((s: SupplierFile)=>({...s, filename: s.path?.split("/").pop()??s.name, name: (s.name??s.path?.split("/").pop()??"Unknown").replace(/\.[^.]+$/, "").trim()}));
-          setSupplierFiles(legacy);
-          if (!legacy.length) {
-            setProjectLoadMsg("No supplier files found in this project");
-            setProjectLoading(false);
-            return;
-          }
-          setProjectLoadMsg(`Found ${legacy.length} supplier file${legacy.length>1?'s':''}. Auto-loading bids…`);
-          (async () => {
-            for (const f of legacy) {
-              try {
-                const fname = f.filename ?? f.name ?? "file.xlsx";
-                const dlUrl = `${API}/projects/${projectId}/files/supplier/${encodeURIComponent(fname)}/url`;
-                const urlRes = await fetch(dlUrl, { headers: hdrs2 });
-                if (!urlRes.ok) { console.warn("[legacy-ingest] download", urlRes.status, fname); continue; }
-                const { url } = await urlRes.json();
-                const dlRes = await fetch(url, { headers: hdrs2 });
-                if (!dlRes.ok) { console.warn("[legacy-ingest] download blob", dlRes.status, fname); continue; }
-                const blob = await dlRes.blob();
-                const fd = new FormData();
-                fd.append("file", blob, fname);
-                const res = await fetch(`${API}/pricing-analysis/ingest-v2`, {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${tok2}` },
-                  body: fd,
-                });
-                if (!res.ok) { console.warn("[legacy-ingest] ingest", res.status); continue; }
-                const data = await res.json();
-                const rows: any[] = data.line_items ?? data.rows ?? data.items ?? [];
-                const sName: string = data.supplier_name ?? f.name ?? fname ?? "Unknown";
-                console.log("[legacy-ingest] ingested", sName, rows.length, "rows");
-                if (rows.length) {
-                  if (currentProjectId !== projectId) { console.log("[legacy-ingest] stale, aborting"); return; }
-                  setStaged(prev => {
-                    const without = prev.filter(s => s.supplierName !== sName);
-                    return [...without, { supplierName: sName, rows, fileName: fname, sheetName: "", headerRow: 0 }];
-                  });
-                }
-              } catch(e) { console.error("[legacy-ingest] FAILED:", e); }
-            }
-            setProjectLoadMsg(`Loaded ${legacy.length} supplier file${legacy.length>1?'s':''}.`);
-            setProjectLoading(false);
-          })();
+          // No files found in new file management system
+          console.warn("[pricing] no files with category=supplier_responses");
+          setSupplierFiles([]);
+          setProjectLoadMsg("No supplier files found. Upload a pricing sheet to get started.");
+          setProjectLoading(false);
           return;
         }
         const mapped: SupplierFile[] = files.map(f=>({ path: f.id, name: ((f as any).display_name??f.filename).replace(/\.[^.]+$/, "").trim(), filename: f.filename, id: f.id }));
