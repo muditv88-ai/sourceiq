@@ -27,8 +27,9 @@ import CopilotPage from "@/pages/CopilotPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
-// Use a dummy clientId if not set — Google OAuth will gracefully disable if not configured
-const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "dummy-client-id-for-dev";
+// For development, use a dummy clientId so GoogleOAuthProvider can wrap the app
+// The actual Google button is hidden if VITE_GOOGLE_CLIENT_ID is not set
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "dev-mode-google-oauth-disabled";
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
