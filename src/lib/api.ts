@@ -3,9 +3,9 @@ import { API_BASE_URL } from "./config";
 // ── Generic request helper ────────────────────────────────────────────────────
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
-  const token = localStorage.getItem("access_token");
+  const token = localStorage.getItem("sourceiq_token");
   const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> ?? {}),
+    ...((options.headers as Record<string, string>) ?? {}),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(url, { ...options, headers });
@@ -24,11 +24,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 async function pollJob<T>(
   statusPath: string,
   timeoutMs = 10 * 60 * 1000,
-  intervalMs = 3000
+  intervalMs = 3000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await request<{ status: string; result?: T; error?: string }>(statusPath);
+    const res = await request<{ status: string; result?: T; error?: string }>(
+      statusPath,
+    );
     if (res.status === "completed" && res.result) return res.result;
     if (res.status === "failed") throw new Error(res.error ?? "Job failed");
     await new Promise((r) => setTimeout(r, intervalMs));
@@ -117,26 +119,40 @@ export interface TechnicalAnalysisResult {
 
 export interface GapAnalysisResult {
   project_id: string;
-  gaps: Record<string, {
-    weak_questions: string[];
-    weak_count: number;
-    disqualified: boolean;
-    disqualify_reasons: string[];
-  }>;
+  gaps: Record<
+    string,
+    {
+      weak_questions: string[];
+      weak_count: number;
+      disqualified: boolean;
+      disqualify_reasons: string[];
+    }
+  >;
   disqualified: string[];
 }
 
 // ── API surface ───────────────────────────────────────────────────────────────
 export const api = {
-
   // ── Health ──────────────────────────────────────────────────────────────────
   health: () => request<{ status: string }>("/health"),
 
   // ── Projects ────────────────────────────────────────────────────────────────
   listProjects: () =>
-    request<{ projects: Array<{ id: string; name: string; status?: string; created_at?: string }> }>("/projects"),
+    request<{
+      projects: Array<{
+        id: string;
+        name: string;
+        status?: string;
+        created_at?: string;
+      }>;
+    }>("/projects"),
 
-  createProject: (params: { name: string; description?: string; commodity?: string; deadline?: string }) =>
+  createProject: (params: {
+    name: string;
+    description?: string;
+    commodity?: string;
+    deadline?: string;
+  }) =>
     request<{ id: string; name: string; status: string }>("/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -144,9 +160,24 @@ export const api = {
     }),
 
   getProject: (projectId: string) =>
-    request<{ id: string; name: string; status: string; rfp_id?: string; created_at?: string; deadline?: string }>(`/projects/${projectId}`),
+    request<{
+      id: string;
+      name: string;
+      status: string;
+      rfp_id?: string;
+      created_at?: string;
+      deadline?: string;
+    }>(`/projects/${projectId}`),
 
-  updateProject: (projectId: string, params: Partial<{ name: string; status: string; deadline: string; description: string }>) =>
+  updateProject: (
+    projectId: string,
+    params: Partial<{
+      name: string;
+      status: string;
+      deadline: string;
+      description: string;
+    }>,
+  ) =>
     request<{ updated: boolean }>(`/projects/${projectId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -154,26 +185,42 @@ export const api = {
     }),
 
   getProjectActivity: (projectId: string) =>
-    request<{ activities: Array<{ timestamp: string; event: string; user?: string }> }>(`/projects/${projectId}/activity`),
+    request<{
+      activities: Array<{ timestamp: string; event: string; user?: string }>;
+    }>(`/projects/${projectId}/activity`),
 
   // ── RFP ─────────────────────────────────────────────────────────────────────
   listRfps: () =>
-    request<{ rfps: Array<{ id: string; title?: string; project_id?: string; status?: string }> }>("/rfp/list"),
+    request<{
+      rfps: Array<{
+        id: string;
+        title?: string;
+        project_id?: string;
+        status?: string;
+      }>;
+    }>("/rfp/list"),
 
   uploadProjectRfp: (projectId: string, file: File) => {
     const fd = new FormData();
     fd.append("file", file);
     return request<{ rfp_id: string; project_id: string; status: string }>(
       `/projects/${projectId}/rfp`,
-      { method: "POST", body: fd }
+      { method: "POST", body: fd },
     );
   },
 
   getRfp: (rfpId: string) =>
-    request<{ rfp_id: string; title?: string; sections?: any[]; status?: string }>(`/rfp/${rfpId}`),
+    request<{
+      rfp_id: string;
+      title?: string;
+      sections?: any[];
+      status?: string;
+    }>(`/rfp/${rfpId}`),
 
   getRfpCompleteness: (projectId: string) =>
-    request<{ score: number; missing: string[]; present: string[] }>(`/rfp/${projectId}/completeness`),
+    request<{ score: number; missing: string[]; present: string[] }>(
+      `/rfp/${projectId}/completeness`,
+    ),
 
   setRfpQuestionWeights: (rfpId: string, weights: Record<string, number>) =>
     request<{ updated: boolean }>(`/rfp/${rfpId}/questions/weights`, {
@@ -189,23 +236,48 @@ export const api = {
     requirements?: string[];
     deadline?: string;
   }) =>
-    request<{ rfp_id: string; status: string; job_id?: string }>("/rfp/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+    request<{ rfp_id: string; status: string; job_id?: string }>(
+      "/rfp/generate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    ),
 
   getRfpStatus: (rfpId: string) =>
-    request<{ rfp_id: string; status: string; sections?: any[] }>(`/rfp/status/${rfpId}`),
+    request<{ rfp_id: string; status: string; sections?: any[] }>(
+      `/rfp/status/${rfpId}`,
+    ),
 
   // ── Suppliers ───────────────────────────────────────────────────────────────
   listSuppliers: () =>
-    request<{ suppliers: Array<{ id: string; name: string; commodity?: string; status?: string; score?: number }> }>("/suppliers"),
+    request<{
+      suppliers: Array<{
+        id: string;
+        name: string;
+        commodity?: string;
+        status?: string;
+        score?: number;
+      }>;
+    }>("/suppliers"),
 
   getSupplier: (id: string) =>
-    request<{ id: string; name: string; commodity?: string; status?: string; score?: number; contacts?: any[] }>(`/suppliers/${id}`),
+    request<{
+      id: string;
+      name: string;
+      commodity?: string;
+      status?: string;
+      score?: number;
+      contacts?: any[];
+    }>(`/suppliers/${id}`),
 
-  addSupplier: (params: { name: string; commodity?: string; email?: string; contact?: string }) =>
+  addSupplier: (params: {
+    name: string;
+    commodity?: string;
+    email?: string;
+    contact?: string;
+  }) =>
     request<{ id: string; name: string }>("/suppliers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -213,30 +285,43 @@ export const api = {
     }),
 
   getSupplierStatus: (id: string) =>
-    request<{ status: string; completeness_pct: number; missing: string[] }>(`/suppliers/${id}/status`),
+    request<{ status: string; completeness_pct: number; missing: string[] }>(
+      `/suppliers/${id}/status`,
+    ),
 
   getSupplierPerformance: (id: string) =>
-    request<{ score: number; on_time_delivery?: number; quality_rating?: number; responsiveness?: number }>(`/suppliers/${id}/performance`),
+    request<{
+      score: number;
+      on_time_delivery?: number;
+      quality_rating?: number;
+      responsiveness?: number;
+    }>(`/suppliers/${id}/performance`),
 
   // ── Supplier Responses ──────────────────────────────────────────────────────
   listResponses: (rfpId?: string) =>
-    request<{ responses: any[] }>(`/responses${rfpId ? `?rfp_id=${rfpId}` : ""}`),
+    request<{ responses: any[] }>(
+      `/responses${rfpId ? `?rfp_id=${rfpId}` : ""}`,
+    ),
 
   uploadResponse: (file: File, rfpId: string, supplierName: string) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("rfp_id", rfpId);
     fd.append("supplier_name", supplierName);
-    return request<{ response_id: string; supplier_name: string; status: string }>(
-      "/responses/upload",
-      { method: "POST", body: fd }
-    );
+    return request<{
+      response_id: string;
+      supplier_name: string;
+      status: string;
+    }>("/responses/upload", { method: "POST", body: fd });
   },
 
   getResponseCompleteness: (responseId: string) =>
-    request<{ completeness_pct: number; missing_sections: string[]; present_sections: string[]; score: number }>(
-      `/responses/${responseId}/completeness`
-    ),
+    request<{
+      completeness_pct: number;
+      missing_sections: string[];
+      present_sections: string[];
+      score: number;
+    }>(`/responses/${responseId}/completeness`),
 
   // ── Analysis (legacy path — kept for backward compat) ────────────────────────
   runAnalysis: (params: { rfp_id: string; project_id?: string }) =>
@@ -247,14 +332,22 @@ export const api = {
     }),
 
   getAnalysisStatus: (jobId: string) =>
-    request<{ job_id: string; status: string; result?: any; error?: string }>(`/analysis/status/${jobId}`),
+    request<{ job_id: string; status: string; result?: any; error?: string }>(
+      `/analysis/status/${jobId}`,
+    ),
 
-  runAnalysisAndPoll: async (params: { rfp_id: string; project_id?: string }) => {
-    const { job_id } = await request<{ job_id: string; status: string }>("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
+  runAnalysisAndPoll: async (params: {
+    rfp_id: string;
+    project_id?: string;
+  }) => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      "/analysis/run",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    );
     return pollJob<any>(`/analysis/status/${job_id}`, 10 * 60 * 1000);
   },
 
@@ -263,7 +356,9 @@ export const api = {
    * Fire-and-poll: posts to /technical-analysis/run then polls status.
    * Called as api.analyzeProject(projectId) from AnalysisPage.
    */
-  analyzeProject: async (projectId: string): Promise<TechnicalAnalysisResult> => {
+  analyzeProject: async (
+    projectId: string,
+  ): Promise<TechnicalAnalysisResult> => {
     // Backend _do_analysis_job loads questions + supplier files from disk by project_id.
     // The /run endpoint accepts a full RunAnalysisRequest but we POST via the
     // project-level job launcher which calls _do_analysis_job directly via projects route.
@@ -274,7 +369,11 @@ export const api = {
     // otherwise call the job-based flow by posting a minimal run request.
     const { job_id } = await request<{ job_id: string; status: string }>(
       `/projects/${projectId}/analyze`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
     ).catch(() =>
       // Fallback: trigger via technical-analysis run with empty payload (backend reads from disk)
       request<{ job_id: string; status: string }>("/technical-analysis/run", {
@@ -285,16 +384,18 @@ export const api = {
           questions: [],
           supplier_responses: {},
         }),
-      })
+      }),
     );
     return pollJob<TechnicalAnalysisResult>(
       `/technical-analysis/status/${job_id}`,
-      10 * 60 * 1000
+      10 * 60 * 1000,
     );
   },
 
   getTechnicalWeightDefaults: () =>
-    request<{ categories: TechnicalWeightCategory[] }>("/technical-analysis/weights/defaults"),
+    request<{ categories: TechnicalWeightCategory[] }>(
+      "/technical-analysis/weights/defaults",
+    ),
 
   runTechnicalAnalysis: (params: {
     project_id: string;
@@ -338,9 +439,12 @@ export const api = {
     }),
 
   getTechnicalAnalysisStatus: (jobId: string) =>
-    request<{ job_id: string; status: string; result?: TechnicalAnalysisResult; error?: string }>(
-      `/technical-analysis/status/${jobId}`
-    ),
+    request<{
+      job_id: string;
+      status: string;
+      result?: TechnicalAnalysisResult;
+      error?: string;
+    }>(`/technical-analysis/status/${jobId}`),
 
   // ── Scenarios ────────────────────────────────────────────────────────────────
   createScenario: (params: {
@@ -351,7 +455,12 @@ export const api = {
   }) =>
     request<{
       scenario_id: string;
-      ranked_suppliers: Array<{ name: string; overall_score: number; category_scores: Record<string, number>; rank: number }>;
+      ranked_suppliers: Array<{
+        name: string;
+        overall_score: number;
+        category_scores: Record<string, number>;
+        rank: number;
+      }>;
       notes: string[];
     }>("/scenarios/create", {
       method: "POST",
@@ -360,19 +469,29 @@ export const api = {
     }),
 
   listScenarios: (projectId: string) =>
-    request<{ scenarios: Array<{ scenario_id: string; name?: string; created_at?: string; weights?: Record<string, number> }> }>(
-      `/scenarios/list/${projectId}`
-    ),
+    request<{
+      scenarios: Array<{
+        scenario_id: string;
+        name?: string;
+        created_at?: string;
+        weights?: Record<string, number>;
+      }>;
+    }>(`/scenarios/list/${projectId}`),
 
   analyzeDeadline: (params: { project_id: string; deadline: string }) =>
-    request<{ risk: string; days_remaining: number; recommendation: string }>("/scenarios/analyze-deadline", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+    request<{ risk: string; days_remaining: number; recommendation: string }>(
+      "/scenarios/analyze-deadline",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    ),
 
   riskAssessment: (params: { project_id: string; scenario_id?: string }) =>
-    request<{ risks: Array<{ supplier: string; risk_level: string; factors: string[] }> }>("/scenarios/risk-assessment", {
+    request<{
+      risks: Array<{ supplier: string; risk_level: string; factors: string[] }>;
+    }>("/scenarios/risk-assessment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -389,15 +508,25 @@ export const api = {
       confidence?: number;
     }>(`/award/status/${projectId}`),
 
-  scoreAward: (params: { project_id: string; weights?: Record<string, number> }) =>
-    request<{ scores: Array<{ supplier: string; score: number }> }>("/award/score", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+  scoreAward: (params: {
+    project_id: string;
+    weights?: Record<string, number>;
+  }) =>
+    request<{ scores: Array<{ supplier: string; score: number }> }>(
+      "/award/score",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    ),
 
   recommendAward: (params: { project_id: string; justification?: string }) =>
-    request<{ recommended_supplier: string; justification: string; confidence: number }>("/award/recommend", {
+    request<{
+      recommended_supplier: string;
+      justification: string;
+      confidence: number;
+    }>("/award/recommend", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -410,13 +539,21 @@ export const api = {
     email_type?: string;
     clarification_points?: string[];
   }) =>
-    request<{ subject: string; body: string; supplier_name: string }>("/communications/draft-email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+    request<{ subject: string; body: string; supplier_name: string }>(
+      "/communications/draft-email",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    ),
 
-  sendEmail: (params: { rfp_id: string; supplier_name: string; subject: string; body: string }) =>
+  sendEmail: (params: {
+    rfp_id: string;
+    supplier_name: string;
+    subject: string;
+    body: string;
+  }) =>
     request<{ sent: boolean; timestamp: string }>("/communications/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -424,15 +561,25 @@ export const api = {
     }),
 
   listCommunications: (rfpId?: string) =>
-    request<{ messages: any[] }>(`/communications${rfpId ? `?rfp_id=${rfpId}` : ""}`),
+    request<{ messages: any[] }>(
+      `/communications${rfpId ? `?rfp_id=${rfpId}` : ""}`,
+    ),
 
   // ── Chat / Copilot ───────────────────────────────────────────────────────────
-  chat: (params: { message: string; session_id?: string; project_id?: string; context?: Record<string, unknown> }) =>
-    request<{ response: string; session_id: string; sources?: string[] }>("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+  chat: (params: {
+    message: string;
+    session_id?: string;
+    project_id?: string;
+    context?: Record<string, unknown>;
+  }) =>
+    request<{ response: string; session_id: string; sources?: string[] }>(
+      "/chat",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    ),
 
   getChatTools: () => request<{ tools: string[] }>("/chat/tools"),
 
@@ -441,10 +588,12 @@ export const api = {
     const fd = new FormData();
     fd.append("file", file);
     if (projectId) fd.append("project_id", projectId);
-    return request<{ drawing_id: string; filename: string; url?: string; project_id?: string }>(
-      "/drawings/upload",
-      { method: "POST", body: fd }
-    );
+    return request<{
+      drawing_id: string;
+      filename: string;
+      url?: string;
+      project_id?: string;
+    }>("/drawings/upload", { method: "POST", body: fd });
   },
 
   listDrawings: (projectId?: string) =>
@@ -454,17 +603,30 @@ export const api = {
     request<{ attached: boolean }>("/drawings/attach", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ drawing_id: drawingId, line_item_id: lineItemId, project_id: projectId }),
+      body: JSON.stringify({
+        drawing_id: drawingId,
+        line_item_id: lineItemId,
+        project_id: projectId,
+      }),
     }),
 
   // ── Pricing Analysis ─────────────────────────────────────────────────────────
-  runPricingAnalysis: async (rfpId: string, projectId?: string): Promise<PricingResult> => {
-    const { job_id } = await request<{ job_id: string; status: string }>("/pricing-analysis/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rfp_id: rfpId, project_id: projectId ?? null }),
-    });
-    return pollJob<PricingResult>(`/pricing-analysis/status/${job_id}`, 10 * 60 * 1000);
+  runPricingAnalysis: async (
+    rfpId: string,
+    projectId?: string,
+  ): Promise<PricingResult> => {
+    const { job_id } = await request<{ job_id: string; status: string }>(
+      "/pricing-analysis/analyze",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rfp_id: rfpId, project_id: projectId ?? null }),
+      },
+    );
+    return pollJob<PricingResult>(
+      `/pricing-analysis/status/${job_id}`,
+      10 * 60 * 1000,
+    );
   },
 
   analyzePricing: (rfpId: string, projectId?: string) =>
@@ -475,9 +637,18 @@ export const api = {
     }),
 
   getPricingStatus: (jobId: string) =>
-    request<{ job_id: string; status: string; result?: unknown; error?: string }>(`/pricing-analysis/status/${jobId}`),
+    request<{
+      job_id: string;
+      status: string;
+      result?: unknown;
+      error?: string;
+    }>(`/pricing-analysis/status/${jobId}`),
 
-  ingestPricingWorkbookSummary: (file: File, supplierName: string, projectId: string): Promise<WorkbookIngestResult> => {
+  ingestPricingWorkbookSummary: (
+    file: File,
+    supplierName: string,
+    projectId: string,
+  ): Promise<WorkbookIngestResult> => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("supplier_name", supplierName);
@@ -491,38 +662,65 @@ export const api = {
 
   // ── Files ────────────────────────────────────────────────────────────────────
   listFiles: (projectId: string, category?: string) =>
-    request<{ files: Array<{ id: string; display_name: string; filename: string; category: string; created_at?: string }> }>(
-      `/files/${projectId}${category ? `?category=${category}` : ""}`
-    ),
+    request<{
+      files: Array<{
+        id: string;
+        display_name: string;
+        filename: string;
+        category: string;
+        created_at?: string;
+      }>;
+    }>(`/files/${projectId}${category ? `?category=${category}` : ""}`),
 
-  uploadFile: (params: { file: File; project_id: string; category: string; user_id: string; display_name?: string }) => {
+  uploadFile: (params: {
+    file: File;
+    project_id: string;
+    category: string;
+    user_id: string;
+    display_name?: string;
+  }) => {
     const fd = new FormData();
     fd.append("file", params.file);
     fd.append("project_id", params.project_id);
     fd.append("category", params.category);
     fd.append("user_id", params.user_id);
     if (params.display_name) fd.append("display_name", params.display_name);
-    return request<{ id: string; display_name: string; filename: string; category: string; content_type: string; size_bytes: number; analysis_status: string; created_at: string }>("/files/upload", {
+    return request<{
+      id: string;
+      display_name: string;
+      filename: string;
+      category: string;
+      content_type: string;
+      size_bytes: number;
+      analysis_status: string;
+      created_at: string;
+    }>("/files/upload", {
       method: "POST",
       body: fd,
     });
   },
 
   getFileUrl: (projectId: string, fileId: string, expiryMinutes = 60) =>
-    request<{ file_id: string; filename: string; url: string; expires_in_minutes: number }>(
-      `/files/${projectId}/${fileId}/url?expiry_minutes=${expiryMinutes}`
-    ),
+    request<{
+      file_id: string;
+      filename: string;
+      url: string;
+      expires_in_minutes: number;
+    }>(`/files/${projectId}/${fileId}/url?expiry_minutes=${expiryMinutes}`),
 
   analyseFile: (projectId: string, fileId: string, analysisType: string) =>
-    request<{ file_id: string; analysis_status: string; result: Record<string, unknown> }>(
-      `/files/${projectId}/${fileId}/analyse`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis_type: analysisType }),
-      }
-    ),
+    request<{
+      file_id: string;
+      analysis_status: string;
+      result: Record<string, unknown>;
+    }>(`/files/${projectId}/${fileId}/analyse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ analysis_type: analysisType }),
+    }),
 
   deleteFile: (projectId: string, fileId: string) =>
-    request<{ deleted: boolean }>(`/files/${projectId}/${fileId}`, { method: "DELETE" }),
+    request<{ deleted: boolean }>(`/files/${projectId}/${fileId}`, {
+      method: "DELETE",
+    }),
 };
