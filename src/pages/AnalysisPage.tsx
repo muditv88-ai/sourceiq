@@ -26,6 +26,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import {
   Trophy, TrendingUp, TrendingDown, BarChart3,
@@ -33,7 +34,7 @@ import {
   FileDown, AlertTriangle, CheckCircle2,
   XCircle, Minus, SlidersHorizontal, ClipboardList,
   Ruler, RefreshCw, ShieldAlert, Loader2, Upload,
-  PlusCircle, Info, AlertCircle,
+  PlusCircle, Info, AlertCircle, Download, Trash2,
 } from "lucide-react";
 
 // ── Auth & API constants ───────────────────────────────────────────────────────
@@ -104,6 +105,33 @@ interface QuestionScore {
   flagged?: boolean;
 }
 interface DisqualRule { field: string; threshold: number; mandatory: boolean; }
+
+// ── Question upload types (FM-6.2 enhancement) ─────────────────────────────
+interface ParsedQuestion {
+  question_id: string;
+  question_text: string;
+  category: string;
+  supplier_name: string;
+  response: string;
+  comments: string;
+}
+
+interface ParsedSheet {
+  sheet_name: string;
+  row_count: number;
+  columns_detected: string[];
+  questions: ParsedQuestion[];
+}
+
+interface ParseQuestionsResponse {
+  sheets: ParsedSheet[];
+  total_questions: number;
+  suppliers_detected: string[];
+}
+
+interface WeightConfig {
+  [category: string]: number; // 0.0–1.0, sum must = 1.0
+}
 
 type Tab = "matrix" | "scores" | "gaps" | "disqual" | "weights" | "drawings";
 type CellStatus = "pass" | "partial" | "fail" | "na";
@@ -288,7 +316,9 @@ function normaliseResult(data: Record<string, unknown>, projectId: string): Anal
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AnalysisPage() {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const qFileInputRef = useRef<HTMLInputElement>(null);
 
   const liveToken = () => localStorage.getItem("access_token") ?? "";
   const liveAh = () => ({ Authorization: `Bearer ${liveToken()}` });
@@ -324,13 +354,29 @@ export default function AnalysisPage() {
   // ── Weights
   const [weights, setWeights]             = useState<Record<string, number>>({});
   const [weightsEdited, setWeightsEdited] = useState(false);
+  const [weightSaving, setWeightSaving]   = useState(false);
+  const [weightSavedMsg, setWeightSavedMsg] = useState("");
+
+  // ── Question upload (FM-6.2 enhancement)
+  const [questionFile, setQuestionFile]   = useState<File | null>(null);
+  const [questionParsing, setQuestionParsing] = useState(false);
+  const [questionParseError, setQuestionParseError] = useState("");
+  const [questionParseResult, setQuestionParseResult] = useState<ParseQuestionsResponse | null>(null);
+  const [activeSheet, setActiveSheet]     = useState<string | null>(null);
+  const [questionConfirming, setQuestionConfirming] = useState(false);
+  const [qRepoFiles, setQRepoFiles]       = useState<RawFile[]>([]);
+  const [qRepoReloadKey, setQRepoReloadKey] = useState(0);
 
   // ── Disqualification
   const [disqualThreshold, setDisqualThreshold] = useState(4.0);
+  const [disqualMaxWeak, setDisqualMaxWeak]     = useState(1);
   const [disqualRules, setDisqualRules]         = useState<DisqualRule[]>([]);
   const [newRuleField, setNewRuleField]         = useState("");
   const [newRuleThreshold, setNewRuleThreshold] = useState(4.0);
   const [newRuleMandatory, setNewRuleMandatory] = useState(false);
+
+  // ── Scoring Pattern section
+  const [scoringPatternOpen, setScoringPatternOpen] = useState(false);
 
   // ── Agent ticker
   const [agentLogs, setAgentLogs] = useState<AgentLog[]>([]);
@@ -397,6 +443,29 @@ export default function AnalysisPage() {
     if (cats[0]) base[cats[0]] += rem;
     setWeights(base);
   }, [result, weightsEdited]);
+
+  // ── Load weights when project changes (FM-6.2 enhancement) ────────────────
+  useEffect(() => {
+    if (!projectId) return;
+    handleLoadWeights(projectId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // ── Load question repository files when project changes ───────────────────
+  useEffect(() => {
+    if (!projectId) {
+      setQRepoFiles([]);
+      return;
+    }
+    const currentProjectId = projectId;
+    fetch(`${API}/files/${projectId}?category=tech_questions`, { headers: liveAh() })
+      .then(r => r.ok ? r.json() : [])
+      .then((files: RawFile[]) => {
+        if (currentProjectId === projectId) setQRepoFiles(files);
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, qRepoReloadKey]);
 
   // ── Agent ticker poll ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -534,6 +603,160 @@ export default function AnalysisPage() {
     setRunning(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, supplierFiles, weights, weightsEdited, disqualThreshold]);
+
+  // ── Question upload handlers (FM-6.2 enhancement) ──────────────────────────
+  const handleParseQuestions = useCallback(async (file: File) => {
+    if (!projectId) return;
+    setQuestionParsing(true);
+    setQuestionParseError("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("project_id", projectId);
+      const res = await fetch(`${API}/technical-analysis/parse-questions`, {
+        method: "POST",
+        headers: liveAh(),
+        body: fd,
+      });
+      if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+      const data: ParseQuestionsResponse = await res.json();
+      setQuestionParseResult(data);
+      if (data.sheets?.length) setActiveSheet(data.sheets[0].sheet_name);
+    } catch (e: unknown) {
+      setQuestionParseError(e instanceof Error ? e.message : "Parse failed");
+    }
+    setQuestionParsing(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const handleConfirmQuestions = useCallback(async () => {
+    if (!questionParseResult || !projectId || !activeSheet) return;
+    const currentProjectId = projectId;
+    setQuestionConfirming(true);
+    try {
+      const sheet = questionParseResult.sheets.find(s => s.sheet_name === activeSheet);
+      if (!sheet) throw new Error("Selected sheet not found");
+      const qs = sheet.questions;
+
+      // Step 1: Confirm questions to backend
+      const res1 = await fetch(`${API}/technical-analysis/confirm-questions`, {
+        method: "POST",
+        headers: { ...liveAh(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          questions: qs,
+          file_display_name: `${activeSheet}-questions`,
+        }),
+      });
+      if (!res1.ok) throw new Error("Confirm failed");
+
+      // Step 2: Upload file to repository
+      if (questionFile && currentProjectId === projectId) {
+        const fd = new FormData();
+        fd.append("file", questionFile);
+        fd.append("project_id", projectId);
+        fd.append("category", "tech_questions");
+        fd.append("display_name", `${activeSheet}-questions`);
+        const res2 = await fetch(`${API}/files/upload`, {
+          method: "POST",
+          headers: liveAh(),
+          body: fd,
+        });
+        if (!res2.ok) throw new Error("Upload failed");
+      }
+
+      // Step 3: Refresh repo files
+      const res3 = await fetch(`${API}/files/${projectId}?category=tech_questions`, { headers: liveAh() });
+      if (res3.ok) setQRepoFiles(await res3.json());
+
+      // Step 4: Clear parse state
+      setQuestionFile(null);
+      setQuestionParseResult(null);
+      setActiveSheet(null);
+
+      // Step 5: Show success
+      toast({
+        title: "Questions saved",
+        description: `Added ${qs.length} questions from ${activeSheet} to repository.`,
+      });
+    } catch (e: unknown) {
+      setQuestionParseError(e instanceof Error ? e.message : "Confirm failed");
+    }
+    setQuestionConfirming(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionParseResult, projectId, activeSheet, questionFile, toast]);
+
+  const handleLoadWeights = useCallback(async (pid: string) => {
+    try {
+      const res = await fetch(`${API}/technical-analysis/weights/${pid}`, { headers: liveAh() });
+      if (res.ok) {
+        const w = await res.json();
+        setWeights(w);
+        setWeightsEdited(false);
+        return;
+      }
+    } catch { /* fall through to defaults */ }
+
+    // Fallback to defaults
+    try {
+      const res = await fetch(`${API}/technical-analysis/weights/defaults`, { headers: liveAh() });
+      if (res.ok) {
+        const w = await res.json();
+        setWeights(w);
+        setWeightsEdited(false);
+      }
+    } catch { /* use defaults from state init */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSaveWeights = useCallback(async () => {
+    if (!projectId || !weightsEdited) return;
+    setWeightSaving(true);
+    try {
+      const res = await fetch(`${API}/technical-analysis/save-weights`, {
+        method: "POST",
+        headers: { ...liveAh(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          weights,
+        }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      setWeightsEdited(false);
+      setWeightSavedMsg("Weights saved ✓");
+      setTimeout(() => setWeightSavedMsg(""), 3000);
+    } catch (e: unknown) {
+      toast({
+        title: "Error",
+        description: e instanceof Error ? e.message : "Failed to save weights",
+        variant: "destructive",
+      });
+    }
+    setWeightSaving(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, weights, weightsEdited, toast]);
+
+  const handleDeleteQFile = useCallback(async (fileId: string) => {
+    if (!projectId) return;
+    const currentProjectId = projectId;
+    try {
+      const res = await fetch(`${API}/files/${projectId}/${fileId}`, {
+        method: "DELETE",
+        headers: liveAh(),
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      if (currentProjectId === projectId) {
+        setQRepoFiles(prev => prev.filter(f => f.id !== fileId));
+      }
+    } catch (e: unknown) {
+      toast({
+        title: "Error",
+        description: e instanceof Error ? e.message : "Failed to delete file",
+        variant: "destructive",
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, toast]);
 
   // ── PDF export (FM-6.5) ────────────────────────────────────────────────────
   const handleExportPDF = useCallback((supplierName: string) => {
@@ -802,6 +1025,157 @@ export default function AnalysisPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Question Repository (FM-6.2 enhancement) */}
+            <Card>
+              <CardHeader className="pb-2 pt-3 px-3">
+                <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Question Repository
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-3 pb-3 space-y-3">
+                {!questionParseResult ? (
+                  <>
+                    <input
+                      ref={qFileInputRef}
+                      type="file"
+                      accept=".xlsx,.xls,.pdf,.docx"
+                      className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0] ?? null;
+                        if (f) {
+                          setQuestionFile(f);
+                          handleParseQuestions(f);
+                        }
+                      }}
+                    />
+                    <button
+                      className="w-full border-2 border-dashed rounded-lg p-3 text-xs text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors text-center"
+                      onClick={() => qFileInputRef.current?.click()}
+                      disabled={questionParsing}
+                    >
+                      {questionParsing ? (
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Parsing sheets…
+                        </div>
+                      ) : (
+                        <><Upload className="h-3.5 w-3.5 mx-auto mb-0.5" />Click to upload<br/><span className="text-[10px]">xlsx / pdf / docx</span></>
+                      )}
+                    </button>
+                    {questionParseError && (
+                      <p className="text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1.5">{questionParseError}</p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* Sheet selector */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {questionParseResult.sheets.map(sheet => (
+                        <button
+                          key={sheet.sheet_name}
+                          onClick={() => setActiveSheet(sheet.sheet_name)}
+                          className={`px-2 py-1 rounded border text-[10px] font-medium transition-colors ${
+                            activeSheet === sheet.sheet_name
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-muted border-border hover:border-primary/40"
+                          }`}
+                        >
+                          {sheet.sheet_name} ({sheet.questions.length})
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Question preview table */}
+                    {activeSheet && (() => {
+                      const sheet = questionParseResult.sheets.find(s => s.sheet_name === activeSheet);
+                      if (!sheet) return null;
+                      const suppliers = [...new Set(sheet.questions.map(q => q.supplier_name))];
+                      return (
+                        <>
+                          <div className="text-xs font-medium text-muted-foreground mb-1">
+                            Question Preview — {activeSheet}
+                          </div>
+                          <div className="overflow-y-auto border rounded max-h-[280px] bg-muted/30">
+                            <table className="w-full text-[10px]">
+                              <thead className="sticky top-0 bg-muted">
+                                <tr className="border-b">
+                                  <th className="px-2 py-1.5 text-left font-medium">#</th>
+                                  <th className="px-2 py-1.5 text-left font-medium">Question</th>
+                                  <th className="px-2 py-1.5 text-left font-medium">Supplier</th>
+                                  <th className="px-2 py-1.5 text-left font-medium">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sheet.questions.slice(0, 50).map((q, i) => {
+                                  const status = q.response ? (q.response.length > 20 ? "pass" : "partial") : "fail";
+                                  const statusStyle = status === "pass" ? "text-emerald-600" : status === "partial" ? "text-amber-600" : "text-rose-600";
+                                  const sIdx = suppliers.indexOf(q.supplier_name);
+                                  return (
+                                    <tr key={i} className={`border-b ${i % 2 === 0 ? "bg-background" : "bg-muted/20"}`}>
+                                      <td className="px-2 py-1 text-muted-foreground">{i + 1}</td>
+                                      <td className="px-2 py-1 max-w-[120px] truncate">{q.question_text}</td>
+                                      <td className="px-2 py-1">
+                                        <span className={`px-1 py-0.5 rounded text-[9px] font-medium border ${SUPPLIER_COLORS[sIdx % SUPPLIER_COLORS.length]}`}>
+                                          {q.supplier_name}
+                                        </span>
+                                      </td>
+                                      <td className={`px-2 py-1 font-medium ${statusStyle}`}>
+                                        {status === "pass" ? "✓ Pass" : status === "partial" ? "~ Partial" : "✗ Fail"}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <div className="text-[10px] text-muted-foreground">
+                            Detected {suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""}: {suppliers.join(", ")}
+                          </div>
+
+                          <Button
+                            size="sm"
+                            className="w-full text-xs"
+                            disabled={questionConfirming || !activeSheet}
+                            onClick={handleConfirmQuestions}
+                          >
+                            {questionConfirming ? (
+                              <><Loader2 className="h-3 w-3 animate-spin mr-1" /> Confirming…</>
+                            ) : (
+                              <>Confirm & Save to Repository</>
+                            )}
+                          </Button>
+                        </>
+                      );
+                    })()}
+                  </>
+                )}
+
+                {/* Confirmed files list */}
+                {qRepoFiles.length > 0 && (
+                  <>
+                    <div className="border-t pt-2.5 mt-2.5">
+                      <p className="text-[10px] font-medium text-muted-foreground mb-1.5">Confirmed Files</p>
+                      <div className="space-y-1">
+                        {qRepoFiles.map(f => (
+                          <div key={f.id} className="flex items-center justify-between bg-muted/30 rounded px-2 py-1.5 text-[10px]">
+                            <span className="truncate flex-1">{f.display_name}</span>
+                            <button
+                              onClick={() => handleDeleteQFile(f.id)}
+                              className="text-muted-foreground hover:text-destructive transition-colors"
+                              title="Delete file"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
           </div>
 
           {/* ── RIGHT PANEL ─────────────────────────────────────────────── */}
@@ -825,6 +1199,12 @@ export default function AnalysisPage() {
                   {runError && (
                     <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2 max-w-sm whitespace-pre-wrap">{runError}</p>
                   )}
+                  {!weightsValid && (
+                    <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 rounded-md px-3 py-2 max-w-sm dark:text-amber-300">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                      Weights must total 100% ({weightTotal}%) to run analysis
+                    </div>
+                  )}
                   {running && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Running technical analysis…
@@ -832,8 +1212,9 @@ export default function AnalysisPage() {
                   )}
                   <Button
                     className="gap-2"
-                    disabled={running || supplierFiles.length === 0 || !projectId}
+                    disabled={running || supplierFiles.length === 0 || !projectId || !weightsValid}
                     onClick={handleRun}
+                    title={!weightsValid ? "Weights must total 100%" : ""}
                   >
                     {running
                       ? <><Loader2 className="h-4 w-4 animate-spin" /> Analysing…</>
@@ -1427,6 +1808,96 @@ export default function AnalysisPage() {
                     })}
                   </div>
                 )}
+
+                {/* ── FM-6.2 Scoring Pattern Section ─────────────────────── */}
+                <Card>
+                  <CardHeader className="pb-2 pt-3 px-4 cursor-pointer" onClick={() => setScoringPatternOpen(!scoringPatternOpen)}>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-xs font-semibold uppercase tracking-wide">Scoring Pattern</CardTitle>
+                      <button className="text-muted-foreground hover:text-foreground transition-colors">
+                        {scoringPatternOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </CardHeader>
+                  {scoringPatternOpen && (
+                    <CardContent className="px-4 pb-4 space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Left: Weight bars */}
+                        <div className="space-y-2.5">
+                          <p className="text-[11px] font-medium text-muted-foreground">Weight Distribution</p>
+                          {allCategories.map(cat => {
+                            const w = weights[cat] ?? 0;
+                            const pct = w;
+                            return (
+                              <div key={cat} className="space-y-0.5">
+                                <div className="flex items-center justify-between text-[10px]">
+                                  <span className="font-medium">{cat}</span>
+                                  <span className="text-muted-foreground">{pct}%</span>
+                                </div>
+                                <div className="h-2 bg-muted rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-primary rounded-full transition-all"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Right: Rules table */}
+                        <div className="space-y-2.5">
+                          <p className="text-[11px] font-medium text-muted-foreground">Scoring Rules</p>
+                          <div className="overflow-auto border rounded text-[10px]">
+                            <table className="w-full">
+                              <thead className="bg-muted sticky top-0">
+                                <tr className="border-b">
+                                  <th className="px-2 py-1 text-left font-medium">Category</th>
+                                  <th className="px-2 py-1 text-center font-medium">Weight</th>
+                                  <th className="px-2 py-1 text-center font-medium">Min</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {allCategories.map((cat, i) => (
+                                  <tr key={cat} className={`border-b text-[10px] ${i % 2 === 0 ? "bg-background" : "bg-muted/20"}`}>
+                                    <td className="px-2 py-1.5 font-medium">{cat}</td>
+                                    <td className="px-2 py-1.5 text-center tabular-nums">{weights[cat] ?? 0}%</td>
+                                    <td className="px-2 py-1.5 text-center text-muted-foreground">4.0</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground p-2 bg-muted/30 rounded">
+                            Supplier scores below {disqualThreshold.toFixed(1)}/10 on {disqualMaxWeak} criteria will be auto-disqualified
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Save button */}
+                      {weightsEdited && (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="flex-1 text-xs gap-1.5"
+                            onClick={handleSaveWeights}
+                            disabled={weightSaving || !weightsValid}
+                          >
+                            {weightSaving ? (
+                              <><Loader2 className="h-3 w-3 animate-spin" /> Saving…</>
+                            ) : (
+                              <>Save Weights</>
+                            )}
+                          </Button>
+                          {weightSavedMsg && (
+                            <span className="text-[10px] text-emerald-600 font-medium">{weightSavedMsg}</span>
+                          )}
+                        </div>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
               </>
             )}
           </div>
