@@ -1912,3 +1912,4 @@ export default function AnalysisPage() {
     </div>
   );
 }
+
