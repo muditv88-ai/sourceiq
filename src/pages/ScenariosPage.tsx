@@ -359,7 +359,7 @@ export default function ScenariosPage() {
         <div className="lg:col-span-2 space-y-4">
 
           {/* Current scenario result */}
-          {result && (
+          {result && result.ranked_suppliers && (
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
