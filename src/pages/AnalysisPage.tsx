@@ -107,7 +107,8 @@ interface QuestionScore {
 interface DisqualRule { field: string; threshold: number; mandatory: boolean; }
 
 // ── Question upload types (FM-6.2 enhancement) ─────────────────────────────
-interface ParsedQuestion {
+// Legacy interfaces (kept for compatibility)
+interface LegacyParsedQuestion {
   question_id: string;
   question_text: string;
   category: string;
@@ -115,11 +116,33 @@ interface ParsedQuestion {
   response: string;
   comments: string;
 }
-
-interface ParsedSheet {
+interface LegacyParsedSheet {
   sheet_name: string;
   row_count: number;
   columns_detected: string[];
+  questions: LegacyParsedQuestion[];
+}
+void ({} as LegacyParsedSheet); // suppress unused warning
+
+interface ParsedQuestion {
+  question_id: string;
+  category: string;
+  question_text: string;
+  supplier_name: string;
+  response: string;
+  comments: string;
+  compliance_raw: string;
+  score_hint: number;
+  status: "pass" | "partial" | "fail" | "unknown";
+  response_quality: "full" | "template" | "empty";
+}
+
+interface ParsedSheet {
+  sheet_name: string;
+  section_name: string;
+  row_count: number;
+  columns_detected: string[];
+  supplier_name: string;
   questions: ParsedQuestion[];
 }
 
@@ -127,6 +150,7 @@ interface ParseQuestionsResponse {
   sheets: ParsedSheet[];
   total_questions: number;
   suppliers_detected: string[];
+  categories: string[];
 }
 
 interface WeightConfig {
@@ -145,6 +169,7 @@ const SUPPLIER_COLORS = [
   "bg-violet-500/10 text-violet-400 border-violet-500/30",
   "bg-sky-500/10 text-sky-400 border-sky-500/30",
 ];
+const SUPPLIER_HEX_COLORS = ["#01696f", "#d19900", "#006494", "#7a39bb", "#964219"];
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "matrix",   label: "Comparison Matrix",  icon: <ClipboardList className="h-3.5 w-3.5" /> },
@@ -358,15 +383,21 @@ export default function AnalysisPage() {
   const [weightSavedMsg, setWeightSavedMsg] = useState("");
 
   // ── Question upload (FM-6.2 enhancement)
-  const [questionFile, setQuestionFile]   = useState<File | null>(null);
+  const [uploadedFile, setUploadedFile]   = useState<File | null>(null);
   const [questionParsing, setQuestionParsing] = useState(false);
   const [questionParseError, setQuestionParseError] = useState("");
-  const [questionParseResult, setQuestionParseResult] = useState<ParseQuestionsResponse | null>(null);
-  const [activeSheet, setActiveSheet]     = useState<string | null>(null);
-  const [questionConfirming, setQuestionConfirming] = useState(false);
-  const [qRepoFiles, setQRepoFiles]       = useState<RawFile[]>([]);
-  const [qRepoReloadKey, setQRepoReloadKey] = useState(0);
+  const [parseResult, setParseResult]     = useState<ParseQuestionsResponse | null>(null);
+  const [activeSheetIdx, setActiveSheetIdx] = useState<number>(0);
+  const [selectedSheetIdxs, setSelectedSheetIdxs] = useState<Set<number>>(new Set());
+  const [confirming, setConfirming]       = useState(false);
+  const [confirmedFiles, setConfirmedFiles] = useState<RawFile[]>([]);
   const [reparsingFileId, setReparsingFileId] = useState<string | null>(null);
+
+  // ── Derived from parseResult
+  const activeSheet = parseResult?.sheets[activeSheetIdx] ?? null;
+  const allSelectedQuestions = parseResult
+    ? [...selectedSheetIdxs].flatMap(i => parseResult.sheets[i]?.questions ?? [])
+    : [];
 
   // ── Disqualification
   const [disqualThreshold, setDisqualThreshold] = useState(4.0);
@@ -455,18 +486,20 @@ export default function AnalysisPage() {
   // ── Load question repository files when project changes ───────────────────
   useEffect(() => {
     if (!projectId) {
-      setQRepoFiles([]);
+      setConfirmedFiles([]);
       return;
     }
     const currentProjectId = projectId;
     fetch(`${API}/files/${projectId}?category=tech_questions`, { headers: liveAh() })
       .then(r => r.ok ? r.json() : [])
-      .then((files: RawFile[]) => {
-        if (currentProjectId === projectId) setQRepoFiles(files);
+      .then((raw: unknown) => {
+        if (currentProjectId !== projectId) return;
+        const files: RawFile[] = Array.isArray(raw) ? raw : ((raw as { files?: RawFile[] }).files ?? []);
+        setConfirmedFiles(files);
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, qRepoReloadKey]);
+  }, [projectId]);
 
   // ── Agent ticker poll ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -612,19 +645,13 @@ export default function AnalysisPage() {
     setQuestionParseError("");
     try {
       const fd = new FormData();
-      // Determine correct MIME type
       let mimeType = file.type;
       if (!mimeType || mimeType === "application/octet-stream") {
         const ext = file.name.toLowerCase();
-        if (ext.endsWith(".xlsx")) {
-          mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        } else if (ext.endsWith(".xls")) {
-          mimeType = "application/vnd.ms-excel";
-        } else if (ext.endsWith(".pdf")) {
-          mimeType = "application/pdf";
-        } else if (ext.endsWith(".docx")) {
-          mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        }
+        if (ext.endsWith(".xlsx")) mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        else if (ext.endsWith(".xls")) mimeType = "application/vnd.ms-excel";
+        else if (ext.endsWith(".pdf")) mimeType = "application/pdf";
+        else if (ext.endsWith(".docx")) mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
       }
       fd.append("file", new File([file], file.name, { type: mimeType }));
       fd.append("project_id", projectId);
@@ -635,8 +662,9 @@ export default function AnalysisPage() {
       });
       if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
       const data: ParseQuestionsResponse = await res.json();
-      setQuestionParseResult(data);
-      if (data.sheets?.length) setActiveSheet(data.sheets[0].sheet_name);
+      setParseResult(data);
+      setActiveSheetIdx(0);
+      setSelectedSheetIdxs(data.sheets?.length === 1 ? new Set([0]) : new Set());
     } catch (e: unknown) {
       setQuestionParseError(e instanceof Error ? e.message : "Parse failed");
     }
@@ -644,71 +672,103 @@ export default function AnalysisPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  const handleConfirmQuestions = useCallback(async () => {
-    if (!questionParseResult || !projectId || !activeSheet) return;
-    const currentProjectId = projectId;
-    setQuestionConfirming(true);
+  const handleConfirm = useCallback(async () => {
+    if (!uploadedFile || !projectId || selectedSheetIdxs.size === 0 || !parseResult) return;
+    setConfirming(true);
+    const headers = liveAh();
     try {
-      const sheet = questionParseResult.sheets.find(s => s.sheet_name === activeSheet);
-      if (!sheet) throw new Error("Selected sheet not found");
-      const qs = sheet.questions;
-
-      // Step 1: Confirm questions to backend
-      const res1 = await fetch(`${API}/technical-analysis/confirm-questions`, {
+      // Step 1: Confirm questions to backend repository
+      const confirmRes = await fetch(`${API}/technical-analysis/confirm-questions`, {
         method: "POST",
-        headers: { ...liveAh(), "Content-Type": "application/json" },
+        headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
-          questions: qs,
-          file_display_name: `${activeSheet}-questions`,
+          questions: allSelectedQuestions,
+          file_display_name: uploadedFile.name,
         }),
       });
-      if (!res1.ok) throw new Error("Confirm failed");
+      if (!confirmRes.ok) throw new Error(await confirmRes.text());
 
-      // Step 2: Upload file to repository
-      if (questionFile && currentProjectId === projectId) {
-        const fd = new FormData();
-        fd.append("file", questionFile);
-        fd.append("project_id", projectId);
-        fd.append("category", "tech_questions");
-        fd.append("display_name", `${activeSheet}-questions`);
-        const res2 = await fetch(`${API}/files/upload`, {
-          method: "POST",
-          headers: liveAh(),
-          body: fd,
-        });
-        if (!res2.ok) throw new Error("Upload failed");
+      // Step 2: Persist file to GCS via /files/upload
+      const formData = new FormData();
+      formData.append("file", uploadedFile);
+      formData.append("project_id", projectId);
+      formData.append("category", "tech_questions");
+      formData.append("display_name", uploadedFile.name);
+      const uploadRes = await fetch(`${API}/files/upload`, {
+        method: "POST",
+        headers,   // DO NOT set Content-Type for FormData — browser sets it with boundary
+        body: formData,
+      });
+      if (!uploadRes.ok) throw new Error(await uploadRes.text());
+
+      // Step 3: Refresh confirmed files list
+      const filesRes = await fetch(
+        `${API}/files/${projectId}?category=tech_questions`,
+        { headers }
+      );
+      if (filesRes.ok) {
+        const raw = await filesRes.json();
+        const files: RawFile[] = Array.isArray(raw) ? raw : (raw.files ?? []);
+        setConfirmedFiles(files);
       }
 
-      // Step 3: Refresh repo files
-      const res3 = await fetch(`${API}/files/${projectId}?category=tech_questions`, { headers: liveAh() });
-      if (res3.ok) setQRepoFiles(await res3.json());
+      // Step 4: Reset parse state
+      const savedParseResult = parseResult;
+      setParseResult(null);
+      setActiveSheetIdx(0);
+      setSelectedSheetIdxs(new Set());
+      setUploadedFile(null);
 
-      // Step 4: Clear parse state
-      setQuestionFile(null);
-      setQuestionParseResult(null);
-      setActiveSheet(null);
+      // Step 5: Initialize weight sliders from parsed categories
+      if (savedParseResult?.categories?.length) {
+        initWeightSliders(savedParseResult.categories);
+      }
 
-      // Step 5: Show success
       toast({
         title: "Questions saved",
-        description: `Added ${qs.length} questions from ${activeSheet} to repository.`,
+        description: `Saved ${allSelectedQuestions.length} questions from ${parseResult.suppliers_detected.join(", ")}.`,
       });
     } catch (e: unknown) {
       setQuestionParseError(e instanceof Error ? e.message : "Confirm failed");
     }
-    setQuestionConfirming(false);
+    setConfirming(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [questionParseResult, projectId, activeSheet, questionFile, toast]);
+  }, [uploadedFile, projectId, selectedSheetIdxs, parseResult, allSelectedQuestions, toast]);
+
+  const initWeightSliders = useCallback((categories: string[]) => {
+    // Only initialize if no weights are saved for this project yet
+    if (Object.keys(weights).length > 0) return;
+    const equalWeight = parseFloat((1 / categories.length).toFixed(3));
+    const newWeights: Record<string, number> = {};
+    categories.forEach((cat, i) => {
+      newWeights[cat] = i === categories.length - 1
+        ? parseFloat((1 - equalWeight * (categories.length - 1)).toFixed(3))
+        : equalWeight;
+    });
+    // Convert 0-1 fractions to 0-100 for the existing slider logic
+    const newWeights100: Record<string, number> = {};
+    categories.forEach((cat, i) => {
+      const share = Math.floor(100 / categories.length);
+      newWeights100[cat] = i === categories.length - 1
+        ? 100 - share * (categories.length - 1)
+        : share;
+    });
+    setWeights(newWeights100);
+    setWeightsEdited(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weights]);
 
   const handleLoadWeights = useCallback(async (pid: string) => {
     try {
       const res = await fetch(`${API}/technical-analysis/weights/${pid}`, { headers: liveAh() });
       if (res.ok) {
         const w = await res.json();
-        setWeights(w);
-        setWeightsEdited(false);
-        return;
+        if (w && Object.keys(w).length > 0) {
+          setWeights(w);
+          setWeightsEdited(false);
+          return;
+        }
       }
     } catch { /* fall through to defaults */ }
 
@@ -717,8 +777,10 @@ export default function AnalysisPage() {
       const res = await fetch(`${API}/technical-analysis/weights/defaults`, { headers: liveAh() });
       if (res.ok) {
         const w = await res.json();
-        setWeights(w);
-        setWeightsEdited(false);
+        if (w && Object.keys(w).length > 0) {
+          setWeights(w);
+          setWeightsEdited(false);
+        }
       }
     } catch { /* use defaults from state init */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -761,7 +823,7 @@ export default function AnalysisPage() {
       });
       if (!res.ok) throw new Error("Delete failed");
       if (currentProjectId === projectId) {
-        setQRepoFiles(prev => prev.filter(f => f.id !== fileId));
+        setConfirmedFiles(prev => prev.filter(f => f.id !== fileId));
       }
     } catch (e: unknown) {
       toast({
@@ -792,7 +854,7 @@ export default function AnalysisPage() {
         docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       };
       const file = new File([blob], fname, { type: mimeMap[ext] ?? "application/octet-stream" });
-      setQuestionFile(file);
+      setUploadedFile(file);
       await handleParseQuestions(file);
     } catch (e: unknown) {
       setQuestionParseError(e instanceof Error ? e.message : "Re-parse failed");
@@ -1077,7 +1139,7 @@ export default function AnalysisPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-3 pb-3 space-y-3">
-                {!questionParseResult ? (
+                {!parseResult ? (
                   <>
                     <input
                       ref={qFileInputRef}
@@ -1087,7 +1149,7 @@ export default function AnalysisPage() {
                       onChange={e => {
                         const f = e.target.files?.[0] ?? null;
                         if (f) {
-                          setQuestionFile(f);
+                          setUploadedFile(f);
                           handleParseQuestions(f);
                         }
                       }}
@@ -1112,59 +1174,93 @@ export default function AnalysisPage() {
                   </>
                 ) : (
                   <>
-                    {/* Sheet selector */}
-                    <div className="flex flex-wrap gap-1.5">
-                      {questionParseResult.sheets.map(sheet => (
-                        <button
-                          key={sheet.sheet_name}
-                          onClick={() => setActiveSheet(sheet.sheet_name)}
-                          className={`px-2 py-1 rounded border text-[10px] font-medium transition-colors ${
-                            activeSheet === sheet.sheet_name
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "bg-muted border-border hover:border-primary/40"
-                          }`}
-                        >
-                          {sheet.sheet_name} ({sheet.questions.length})
-                        </button>
+                    {/* Sheet selector with checkboxes */}
+                    <div className="space-y-1.5">
+                      {parseResult.sheets.map((sheet, idx) => (
+                        <div key={idx} className="flex items-center gap-2 p-2 rounded border border-border hover:border-primary/40 transition-colors cursor-pointer"
+                          onClick={() => setActiveSheetIdx(idx)}>
+                          <input
+                            type="checkbox"
+                            checked={selectedSheetIdxs.has(idx)}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              const next = new Set(selectedSheetIdxs);
+                              next.has(idx) ? next.delete(idx) : next.add(idx);
+                              setSelectedSheetIdxs(next);
+                            }}
+                            className="w-3.5 h-3.5 cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] font-medium truncate">
+                              {sheet.sheet_name} › {sheet.section_name} ({sheet.row_count})
+                            </p>
+                            <p className="text-[9px] text-muted-foreground">{sheet.questions.length} questions</p>
+                          </div>
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-white shrink-0"
+                            style={{ backgroundColor: SUPPLIER_HEX_COLORS[(parseResult.suppliers_detected.indexOf(sheet.supplier_name)) % SUPPLIER_HEX_COLORS.length], borderColor: "transparent" }}
+                          >
+                            {sheet.supplier_name.split(" ")[0]}
+                          </span>
+                        </div>
                       ))}
                     </div>
 
                     {/* Question preview table */}
                     {activeSheet && (() => {
-                      const sheet = questionParseResult.sheets.find(s => s.sheet_name === activeSheet);
-                      if (!sheet) return null;
-                      const suppliers = [...new Set(sheet.questions.map(q => q.supplier_name))];
+                      const suppColorMap: Record<string, number> = {};
+                      parseResult.suppliers_detected.forEach((s, i) => {
+                        suppColorMap[s] = i;
+                      });
                       return (
                         <>
                           <div className="text-xs font-medium text-muted-foreground mb-1">
-                            Question Preview — {activeSheet}
+                            Question Preview — {activeSheet.sheet_name} › {activeSheet.section_name}
                           </div>
-                          <div className="overflow-y-auto border rounded max-h-[280px] bg-muted/30">
-                            <table className="w-full text-[10px]">
+                          <div className="overflow-x-auto border rounded max-h-[280px] bg-muted/30">
+                            <table className="w-full text-[10px] whitespace-nowrap">
                               <thead className="sticky top-0 bg-muted">
                                 <tr className="border-b">
                                   <th className="px-2 py-1.5 text-left font-medium">#</th>
-                                  <th className="px-2 py-1.5 text-left font-medium">Question</th>
-                                  <th className="px-2 py-1.5 text-left font-medium">Supplier</th>
+                                  <th className="px-2 py-1.5 text-left font-medium">Q#</th>
+                                  <th className="px-2 py-1.5 text-left font-medium max-w-[80px]">Category</th>
+                                  <th className="px-2 py-1.5 text-left font-medium max-w-[120px]">Question</th>
+                                  <th className="px-2 py-1.5 text-left font-medium max-w-[100px]">Response</th>
                                   <th className="px-2 py-1.5 text-left font-medium">Status</th>
+                                  <th className="px-2 py-1.5 text-left font-medium">Supplier</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {sheet.questions.slice(0, 50).map((q, i) => {
-                                  const status = q.response ? (q.response.length > 20 ? "pass" : "partial") : "fail";
-                                  const statusStyle = status === "pass" ? "text-emerald-600" : status === "partial" ? "text-amber-600" : "text-rose-600";
-                                  const sIdx = suppliers.indexOf(q.supplier_name);
+                                {activeSheet.questions.slice(0, 50).map((q, i) => {
+                                  const statusBg = q.status === "pass" ? "bg-emerald-500" : q.status === "partial" ? "bg-amber-500" : q.status === "fail" ? "bg-rose-500" : "bg-gray-500";
+                                  const statusText = q.status === "pass" ? "✓" : q.status === "partial" ? "⚠" : q.status === "fail" ? "✗" : "?";
+                                  const colorIdx = suppColorMap[q.supplier_name] ?? 0;
                                   return (
                                     <tr key={i} className={`border-b ${i % 2 === 0 ? "bg-background" : "bg-muted/20"}`}>
                                       <td className="px-2 py-1 text-muted-foreground">{i + 1}</td>
-                                      <td className="px-2 py-1 max-w-[120px] truncate">{q.question_text}</td>
+                                      <td className="px-2 py-1 font-medium">{q.question_id}</td>
+                                      <td className="px-2 py-1 max-w-[80px] truncate" title={q.category}>{q.category}</td>
+                                      <td className="px-2 py-1 max-w-[120px] truncate" title={q.question_text}>{q.question_text}</td>
+                                      <td className="px-2 py-1 max-w-[100px] truncate">
+                                        {q.response_quality === "template" && (
+                                          <span className="italic text-muted-foreground" title="Template response — AI will score conservatively">{q.response.slice(0, 30)}</span>
+                                        )}
+                                        {q.response_quality === "empty" && (
+                                          <span className="text-rose-600">—</span>
+                                        )}
+                                        {q.response_quality === "full" && (
+                                          <span>{q.response.slice(0, 30)}</span>
+                                        )}
+                                      </td>
                                       <td className="px-2 py-1">
-                                        <span className={`px-1 py-0.5 rounded text-[9px] font-medium border ${SUPPLIER_COLORS[sIdx % SUPPLIER_COLORS.length]}`}>
-                                          {q.supplier_name}
+                                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium text-white ${statusBg}`}>
+                                          {statusText}
                                         </span>
                                       </td>
-                                      <td className={`px-2 py-1 font-medium ${statusStyle}`}>
-                                        {status === "pass" ? "✓ Pass" : status === "partial" ? "~ Partial" : "✗ Fail"}
+                                      <td className="px-2 py-1">
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-medium text-white" style={{ backgroundColor: SUPPLIER_HEX_COLORS[colorIdx % SUPPLIER_HEX_COLORS.length] }}>
+                                          {q.supplier_name.split(" ")[0]}
+                                        </span>
                                       </td>
                                     </tr>
                                   );
@@ -1174,19 +1270,19 @@ export default function AnalysisPage() {
                           </div>
 
                           <div className="text-[10px] text-muted-foreground">
-                            Detected {suppliers.length} supplier{suppliers.length !== 1 ? "s" : ""}: {suppliers.join(", ")}
+                            Detected {parseResult.suppliers_detected.length} supplier{parseResult.suppliers_detected.length !== 1 ? "s" : ""}: {parseResult.suppliers_detected.join(", ")} · {parseResult.total_questions} total questions across {parseResult.sheets.length} sheet{parseResult.sheets.length !== 1 ? "s" : ""}
                           </div>
 
                           <Button
                             size="sm"
                             className="w-full text-xs"
-                            disabled={questionConfirming || !activeSheet}
-                            onClick={handleConfirmQuestions}
+                            disabled={confirming || selectedSheetIdxs.size === 0}
+                            onClick={handleConfirm}
                           >
-                            {questionConfirming ? (
+                            {confirming ? (
                               <><Loader2 className="h-3 w-3 animate-spin mr-1" /> Confirming…</>
                             ) : (
-                              <>Confirm & Save to Repository</>
+                              <>Confirm & Save {allSelectedQuestions.length} Questions</>
                             )}
                           </Button>
                         </>
@@ -1196,12 +1292,12 @@ export default function AnalysisPage() {
                 )}
 
                 {/* Confirmed files list */}
-                {qRepoFiles.length > 0 && (
+                {confirmedFiles.length > 0 && (
                   <>
                     <div className="border-t pt-2.5 mt-2.5">
                       <p className="text-[10px] font-medium text-muted-foreground mb-1.5">Confirmed Files</p>
                       <div className="space-y-1">
-                        {qRepoFiles.map(f => (
+                        {confirmedFiles.map(f => (
                           <div key={f.id} className="flex flex-col gap-1 bg-muted/30 rounded px-2 py-1.5">
                             <div className="flex items-center justify-between">
                               <span className="truncate flex-1 text-[10px]">{f.display_name}</span>
