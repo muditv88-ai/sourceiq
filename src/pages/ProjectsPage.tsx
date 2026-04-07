@@ -99,7 +99,7 @@ export default function ProjectsPage() {
     if (!newName.trim()) return;
     setBusy(true);
     try {
-      const p = await api.createProject(newName.trim());
+      const p = await api.createProject({ name: newName.trim() });
       setNewName(""); setCreating(false);
       await fetchProjects();
       openProject(p);
