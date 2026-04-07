@@ -645,22 +645,17 @@ export default function AnalysisPage() {
     setQuestionParseError("");
     try {
       const fd = new FormData();
-      let mimeType = file.type;
-      if (!mimeType || mimeType === "application/octet-stream") {
-        const ext = file.name.toLowerCase();
-        if (ext.endsWith(".xlsx")) mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        else if (ext.endsWith(".xls")) mimeType = "application/vnd.ms-excel";
-        else if (ext.endsWith(".pdf")) mimeType = "application/pdf";
-        else if (ext.endsWith(".docx")) mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-      }
-      fd.append("file", new File([file], file.name, { type: mimeType }));
+      fd.append("file", file);
       fd.append("project_id", projectId);
       const res = await fetch(`${API}/technical-analysis/parse-questions`, {
         method: "POST",
         headers: liveAh(),
         body: fd,
       });
-      if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Parse failed (${res.status}): ${errText}`);
+      }
       const data: ParseQuestionsResponse = await res.json();
       setParseResult(data);
       setActiveSheetIdx(0);
