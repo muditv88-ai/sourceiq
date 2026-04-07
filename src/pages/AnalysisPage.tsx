@@ -483,6 +483,19 @@ export default function AnalysisPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // ── Initialize default weights if empty ──────────────────────────────────
+  useEffect(() => {
+    if (Object.keys(weights).length === 0) {
+      const defaultWeights = {
+        "Technical": 30,
+        "Pricing": 35,
+        "Experience": 20,
+        "Support": 15,
+      };
+      setWeights(defaultWeights);
+    }
+  }, []);
+
   // ── Load question repository files when project changes ───────────────────
   useEffect(() => {
     if (!projectId) {
@@ -1155,12 +1168,17 @@ export default function AnalysisPage() {
                     <input
                       ref={qFileInputRef}
                       type="file"
-                      accept=".xlsx,.xls,.pdf,.docx"
+                      accept=".xlsx,.xls"
                       className="hidden"
                       onChange={e => {
                         const f = e.target.files?.[0] ?? null;
                         if (f) {
+                          if (!f.name.toLowerCase().endsWith((".xlsx", ".xls"))) {
+                            setQuestionParseError("Please upload .xlsx or .xls files only");
+                            return;
+                          }
                           setUploadedFile(f);
+                          setQuestionParseError("");
                           handleParseQuestions(f);
                         }
                       }}
@@ -1176,7 +1194,7 @@ export default function AnalysisPage() {
                           Parsing sheets…
                         </div>
                       ) : (
-                        <><Upload className="h-3.5 w-3.5 mx-auto mb-0.5" />Click to upload<br/><span className="text-[10px]">xlsx / pdf / docx</span></>
+                        <><Upload className="h-3.5 w-3.5 mx-auto mb-0.5" />Click to upload<br/><span className="text-[10px]">xlsx / xls only</span></>
                       )}
                     </button>
                     {questionParseError && (
