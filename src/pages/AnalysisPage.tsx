@@ -366,6 +366,7 @@ export default function AnalysisPage() {
   const [questionConfirming, setQuestionConfirming] = useState(false);
   const [qRepoFiles, setQRepoFiles]       = useState<RawFile[]>([]);
   const [qRepoReloadKey, setQRepoReloadKey] = useState(0);
+  const [reparsingFileId, setReparsingFileId] = useState<string | null>(null);
 
   // ── Disqualification
   const [disqualThreshold, setDisqualThreshold] = useState(4.0);
@@ -772,6 +773,34 @@ export default function AnalysisPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, toast]);
 
+  const handleReParseQFile = useCallback(async (fileId: string, displayName: string) => {
+    if (!projectId) return;
+    setReparsingFileId(fileId);
+    setQuestionParseError("");
+    try {
+      const res = await fetch(`${API}/files/${projectId}/${fileId}/content`, {
+        headers: liveAh(),
+      });
+      if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
+      const blob = await res.blob();
+      const fname = displayName.includes(".") ? displayName : displayName + ".xlsx";
+      const ext = fname.split(".").pop()?.toLowerCase() ?? "xlsx";
+      const mimeMap: Record<string, string> = {
+        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        xls: "application/vnd.ms-excel",
+        pdf: "application/pdf",
+        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      };
+      const file = new File([blob], fname, { type: mimeMap[ext] ?? "application/octet-stream" });
+      setQuestionFile(file);
+      await handleParseQuestions(file);
+    } catch (e: unknown) {
+      setQuestionParseError(e instanceof Error ? e.message : "Re-parse failed");
+    }
+    setReparsingFileId(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, handleParseQuestions]);
+
   // ── PDF export (FM-6.5) ────────────────────────────────────────────────────
   const handleExportPDF = useCallback((supplierName: string) => {
     setExportingSupplier(supplierName);
@@ -1173,14 +1202,25 @@ export default function AnalysisPage() {
                       <p className="text-[10px] font-medium text-muted-foreground mb-1.5">Confirmed Files</p>
                       <div className="space-y-1">
                         {qRepoFiles.map(f => (
-                          <div key={f.id} className="flex items-center justify-between bg-muted/30 rounded px-2 py-1.5 text-[10px]">
-                            <span className="truncate flex-1">{f.display_name}</span>
+                          <div key={f.id} className="flex flex-col gap-1 bg-muted/30 rounded px-2 py-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="truncate flex-1 text-[10px]">{f.display_name}</span>
+                              <button
+                                onClick={() => handleDeleteQFile(f.id)}
+                                className="text-muted-foreground hover:text-destructive transition-colors ml-1"
+                                title="Delete file"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
                             <button
-                              onClick={() => handleDeleteQFile(f.id)}
-                              className="text-muted-foreground hover:text-destructive transition-colors"
-                              title="Delete file"
+                              className="flex items-center gap-1 text-[10px] text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed w-fit"
+                              disabled={reparsingFileId === f.id || questionParsing}
+                              onClick={() => handleReParseQFile(f.id, f.display_name)}
                             >
-                              <Trash2 className="h-3 w-3" />
+                              {reparsingFileId === f.id
+                                ? <><Loader2 className="h-3 w-3 animate-spin" /> Parsing…</>
+                                : <><RefreshCw className="h-3 w-3" /> Re-parse</>}
                             </button>
                           </div>
                         ))}
