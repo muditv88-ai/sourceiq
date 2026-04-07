@@ -164,11 +164,18 @@ export default function ScenariosPage() {
     if (!selectedProject) return;
     setRunning(true); setRunError(""); setResult(null);
     try {
+      // Normalize weights from 0-100 to 0-1 format
+      const total = Object.values(weights).reduce((a, b) => a + b, 0);
+      const normalizedWeights: Record<string, number> = {};
+      for (const [k, v] of Object.entries(weights)) {
+        normalizedWeights[k] = total > 0 ? v / total : 0;
+      }
+
       const res = await api.createScenario({
         project_id: selectedProject,
-        weights,
+        weights: normalizedWeights,
         excluded_suppliers: Array.from(excluded),
-        name: scenarioName || undefined,
+        title: scenarioName || undefined,
       });
       setResult(res);
       api.listScenarios(selectedProject).then(r => setSaved(r.scenarios ?? [])).catch(() => {});
