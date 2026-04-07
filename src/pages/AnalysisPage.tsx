@@ -677,13 +677,29 @@ export default function AnalysisPage() {
     setConfirming(true);
     const headers = liveAh();
     try {
-      // Step 1: Confirm questions to backend repository
+      // Step 1: Confirm questions to backend repository (map to backend format)
+      const mappedQuestions = allSelectedQuestions.map(q => ({
+        question_id: q.question_id,
+        question_text: q.question_text,
+        category: q.category,
+        question_type: "qualitative",
+        weight: 10,
+        scoring_guidance: q.compliance_raw || q.response,
+        // Preserve new fields for future use
+        supplier_name: q.supplier_name,
+        response: q.response,
+        comments: q.comments,
+        compliance_raw: q.compliance_raw,
+        score_hint: q.score_hint,
+        status: q.status,
+        response_quality: q.response_quality,
+      }));
       const confirmRes = await fetch(`${API}/technical-analysis/confirm-questions`, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
-          questions: allSelectedQuestions,
+          questions: mappedQuestions,
           file_display_name: uploadedFile.name,
         }),
       });
