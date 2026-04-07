@@ -147,7 +147,7 @@ export default function ScenariosPage() {
   }, [selectedProject]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
-  function applyTemplate(tpl: typeof TEMPLATES[number]) {
+  function applyTemplate(tpl: typeof TEMPLATES) {
     setWeights({ ...tpl.weights });
     setScenarioName(tpl.label);
   }

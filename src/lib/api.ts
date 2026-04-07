@@ -456,7 +456,7 @@ export const api = {
     project_id: string;
     weights: Record<string, number>;
     excluded_suppliers?: string[];
-    name?: string;
+    title?: string;
   }) =>
     request<{
       scenario_id: string;
