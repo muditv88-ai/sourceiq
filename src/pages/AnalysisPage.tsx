@@ -1192,16 +1192,18 @@ export default function AnalysisPage() {
                           />
                           <div className="flex-1 min-w-0">
                             <p className="text-[10px] font-medium truncate">
-                              {sheet.sheet_name} › {sheet.section_name} ({sheet.row_count})
+                              {sheet.sheet_name}{sheet.section_name ? ` › ${sheet.section_name}` : ""} ({sheet.row_count || 0})
                             </p>
-                            <p className="text-[9px] text-muted-foreground">{sheet.questions.length} questions</p>
+                            <p className="text-[9px] text-muted-foreground">{sheet.questions?.length ?? 0} questions</p>
                           </div>
-                          <span
-                            className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-white shrink-0"
-                            style={{ backgroundColor: SUPPLIER_HEX_COLORS[(parseResult.suppliers_detected.indexOf(sheet.supplier_name)) % SUPPLIER_HEX_COLORS.length], borderColor: "transparent" }}
-                          >
-                            {sheet.supplier_name.split(" ")[0]}
-                          </span>
+                          {sheet.supplier_name && (
+                            <span
+                              className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-white shrink-0"
+                              style={{ backgroundColor: SUPPLIER_HEX_COLORS[Math.max(0, (parseResult.suppliers_detected ?? []).indexOf(sheet.supplier_name)) % SUPPLIER_HEX_COLORS.length], borderColor: "transparent" }}
+                            >
+                              {sheet.supplier_name.split(" ")[0]}
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1209,13 +1211,13 @@ export default function AnalysisPage() {
                     {/* Question preview table */}
                     {activeSheet && (() => {
                       const suppColorMap: Record<string, number> = {};
-                      parseResult.suppliers_detected.forEach((s, i) => {
-                        suppColorMap[s] = i;
+                      (parseResult.suppliers_detected ?? []).forEach((s, i) => {
+                        if (s) suppColorMap[s] = i;
                       });
                       return (
                         <>
                           <div className="text-xs font-medium text-muted-foreground mb-1">
-                            Question Preview — {activeSheet.sheet_name} › {activeSheet.section_name}
+                            Question Preview — {activeSheet.sheet_name}{activeSheet.section_name ? ` › ${activeSheet.section_name}` : ""}
                           </div>
                           <div className="overflow-x-auto border rounded max-h-[280px] bg-muted/30">
                             <table className="w-full text-[10px] whitespace-nowrap">
@@ -1232,8 +1234,9 @@ export default function AnalysisPage() {
                               </thead>
                               <tbody>
                                 {activeSheet.questions.slice(0, 50).map((q, i) => {
-                                  const statusBg = q.status === "pass" ? "bg-emerald-500" : q.status === "partial" ? "bg-amber-500" : q.status === "fail" ? "bg-rose-500" : "bg-gray-500";
-                                  const statusText = q.status === "pass" ? "✓" : q.status === "partial" ? "⚠" : q.status === "fail" ? "✗" : "?";
+                                  const status = q.status ?? "unknown";
+                                  const statusBg = status === "pass" ? "bg-emerald-500" : status === "partial" ? "bg-amber-500" : status === "fail" ? "bg-rose-500" : "bg-gray-500";
+                                  const statusText = status === "pass" ? "✓" : status === "partial" ? "⚠" : status === "fail" ? "✗" : "?";
                                   const colorIdx = suppColorMap[q.supplier_name] ?? 0;
                                   return (
                                     <tr key={i} className={`border-b ${i % 2 === 0 ? "bg-background" : "bg-muted/20"}`}>
@@ -1242,14 +1245,14 @@ export default function AnalysisPage() {
                                       <td className="px-2 py-1 max-w-[80px] truncate" title={q.category}>{q.category}</td>
                                       <td className="px-2 py-1 max-w-[120px] truncate" title={q.question_text}>{q.question_text}</td>
                                       <td className="px-2 py-1 max-w-[100px] truncate">
-                                        {q.response_quality === "template" && (
-                                          <span className="italic text-muted-foreground" title="Template response — AI will score conservatively">{q.response.slice(0, 30)}</span>
+                                        {(q.response_quality ?? "full") === "template" && (
+                                          <span className="italic text-muted-foreground" title="Template response — AI will score conservatively">{q.response?.slice(0, 30) || "—"}</span>
                                         )}
-                                        {q.response_quality === "empty" && (
+                                        {(q.response_quality ?? "full") === "empty" && (
                                           <span className="text-rose-600">—</span>
                                         )}
-                                        {q.response_quality === "full" && (
-                                          <span>{q.response.slice(0, 30)}</span>
+                                        {(q.response_quality ?? "full") === "full" && (
+                                          <span>{q.response?.slice(0, 30) || "—"}</span>
                                         )}
                                       </td>
                                       <td className="px-2 py-1">
@@ -1258,9 +1261,11 @@ export default function AnalysisPage() {
                                         </span>
                                       </td>
                                       <td className="px-2 py-1">
-                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-medium text-white" style={{ backgroundColor: SUPPLIER_HEX_COLORS[colorIdx % SUPPLIER_HEX_COLORS.length] }}>
-                                          {q.supplier_name.split(" ")[0]}
-                                        </span>
+                                        {q.supplier_name && (
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-medium text-white" style={{ backgroundColor: SUPPLIER_HEX_COLORS[colorIdx % SUPPLIER_HEX_COLORS.length] }}>
+                                            {q.supplier_name.split(" ")[0]}
+                                          </span>
+                                        )}
                                       </td>
                                     </tr>
                                   );
