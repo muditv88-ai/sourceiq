@@ -122,7 +122,7 @@ export default function ScenariosPage() {
   // ── Load projects ───────────────────────────────────────────────────────────
   useEffect(() => {
     api.listProjects()
-      .then(r => setProjects((r.projects ?? []).map(p => ({ id: p.id, name: p.name }))))
+      .then(r => setProjects((r.projects ?? []).map(p => ({ id: (p as any).project_id || p.id, name: p.name }))))
       .catch(() => {})
       .finally(() => setLoadingProjects(false));
   }, []);
@@ -147,7 +147,7 @@ export default function ScenariosPage() {
   }, [selectedProject]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
-  function applyTemplate(tpl: typeof TEMPLATES) {
+  function applyTemplate(tpl: typeof TEMPLATES[number]) {
     setWeights({ ...tpl.weights });
     setScenarioName(tpl.label);
   }
