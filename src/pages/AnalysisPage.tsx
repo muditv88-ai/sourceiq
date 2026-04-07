@@ -490,7 +490,7 @@ export default function AnalysisPage() {
       return;
     }
     const currentProjectId = projectId;
-    fetch(`${API}/files/${projectId}?category=tech_questions`, { headers: liveAh() })
+    fetch(`${API}/files/${projectId}?category=misc`, { headers: liveAh() })
       .then(r => r.ok ? r.json() : [])
       .then((raw: unknown) => {
         if (currentProjectId !== projectId) return;
@@ -709,7 +709,7 @@ export default function AnalysisPage() {
       const formData = new FormData();
       formData.append("file", uploadedFile);
       formData.append("project_id", projectId);
-      formData.append("category", "tech_questions");
+      formData.append("category", "misc");  // Backend only supports: rfp_templates, supplier_responses, drawings, misc
       formData.append("display_name", uploadedFile.name);
       const uploadRes = await fetch(`${API}/files/upload`, {
         method: "POST",
@@ -720,7 +720,7 @@ export default function AnalysisPage() {
 
       // Step 3: Refresh confirmed files list
       const filesRes = await fetch(
-        `${API}/files/${projectId}?category=tech_questions`,
+        `${API}/files/${projectId}?category=misc`,
         { headers }
       );
       if (filesRes.ok) {
