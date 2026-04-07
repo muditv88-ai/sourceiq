@@ -794,7 +794,13 @@ export default function AnalysisPage() {
         : obj;
     const entries = Object.entries(candidate).filter(([, v]) => typeof v === "number");
     if (!entries.length) return null;
-    return Object.fromEntries(entries) as Record<string, number>;
+    const result = Object.fromEntries(entries) as Record<string, number>;
+    // Convert decimal weights (0–1 range) to percentages (0–100)
+    const total = Object.values(result).reduce((a, b) => a + b, 0);
+    if (total <= 1.01) {
+      return Object.fromEntries(Object.entries(result).map(([k, v]) => [k, Math.round(v * 100)]));
+    }
+    return result;
   };
 
   const handleLoadWeights = useCallback(async (pid: string) => {
@@ -833,7 +839,7 @@ export default function AnalysisPage() {
         headers: { ...liveAh(), "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
-          weights,
+          weights: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, v / 100])),
         }),
       });
       if (!res.ok) throw new Error("Save failed");
