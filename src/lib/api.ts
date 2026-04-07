@@ -152,12 +152,17 @@ export const api = {
     description?: string;
     commodity?: string;
     deadline?: string;
-  }) =>
-    request<{ id: string; name: string; status: string }>("/projects", {
+  }) => {
+    const fd = new FormData();
+    fd.append("name", params.name);
+    if (params.description) fd.append("description", params.description);
+    if (params.commodity) fd.append("commodity", params.commodity);
+    if (params.deadline) fd.append("deadline", params.deadline);
+    return request<{ id: string; name: string; status: string }>("/projects", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    }),
+      body: fd,
+    });
+  },
 
   getProject: (projectId: string) =>
     request<{
