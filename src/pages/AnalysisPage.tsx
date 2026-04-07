@@ -783,12 +783,26 @@ export default function AnalysisPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weights]);
 
+  const extractNumericWeights = (raw: unknown): Record<string, number> | null => {
+    if (!raw || typeof raw !== "object") return null;
+    // Unwrap if the API wraps weights under a key like { defaults: {...} } or { weights: {...} }
+    const obj = raw as Record<string, unknown>;
+    const candidate = (obj.weights && typeof obj.weights === "object")
+      ? obj.weights as Record<string, unknown>
+      : (obj.defaults && typeof obj.defaults === "object")
+        ? obj.defaults as Record<string, unknown>
+        : obj;
+    const entries = Object.entries(candidate).filter(([, v]) => typeof v === "number");
+    if (!entries.length) return null;
+    return Object.fromEntries(entries) as Record<string, number>;
+  };
+
   const handleLoadWeights = useCallback(async (pid: string) => {
     try {
       const res = await fetch(`${API}/technical-analysis/weights/${pid}`, { headers: liveAh() });
       if (res.ok) {
-        const w = await res.json();
-        if (w && Object.keys(w).length > 0) {
+        const w = extractNumericWeights(await res.json());
+        if (w) {
           setWeights(w);
           setWeightsEdited(false);
           return;
@@ -800,8 +814,8 @@ export default function AnalysisPage() {
     try {
       const res = await fetch(`${API}/technical-analysis/weights/defaults`, { headers: liveAh() });
       if (res.ok) {
-        const w = await res.json();
-        if (w && Object.keys(w).length > 0) {
+        const w = extractNumericWeights(await res.json());
+        if (w) {
           setWeights(w);
           setWeightsEdited(false);
         }
@@ -901,7 +915,7 @@ export default function AnalysisPage() {
     [result]
   );
 
-  const weightTotal  = useMemo(() => Object.values(weights).reduce((a, b) => a + b, 0), [weights]);
+  const weightTotal  = useMemo(() => Math.round(Object.values(weights).reduce((a: number, b) => a + (typeof b === "number" ? b : 0), 0)), [weights]);
   const weightsValid = Math.abs(weightTotal - 100) < 1;
 
   const enrichedSuppliers = useMemo(() =>
@@ -1173,7 +1187,8 @@ export default function AnalysisPage() {
                       onChange={e => {
                         const f = e.target.files?.[0] ?? null;
                         if (f) {
-                          if (!f.name.toLowerCase().endsWith((".xlsx", ".xls"))) {
+                          const lower = f.name.toLowerCase();
+                          if (!lower.endsWith(".xlsx") && !lower.endsWith(".xls")) {
                             setQuestionParseError("Please upload .xlsx or .xls files only");
                             return;
                           }
